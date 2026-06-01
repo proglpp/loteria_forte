@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+database/
+exports/
+logs/
+reports/
+notebooks/.ipynb_checkpoints/
+*.sqlite
+*.db
+.DS_Store
+.idea/
+.vscode/
