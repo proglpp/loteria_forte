@@ -26,6 +26,7 @@ from statistics_engine import build_statistics_report
 import ml_engine as ml_engine_module
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 from lightgbm import LGBMClassifier
+from game_ui import render_game_selector_panel, render_generated_games_gallery
 
 logger = logging.getLogger(__name__)
 
@@ -328,34 +329,163 @@ def compute_montecarlo(draws, n_simulations):
     return MonteCarloSimulator(draws).run_simulation(n_simulations=n_simulations)
 
 
-@st.cache_data(show_spinner=False)
-def generate_game(features, selection, method: str, game_size: int = 50):
+def _normalize_game_numbers(selection, limit: int | None = None):
+    normalized = []
+    for value in selection or []:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= number <= 99:
+            normalized.append(f"{number:02d}")
+    normalized = list(dict.fromkeys(normalized))
+    return normalized[:limit] if limit is not None else normalized
+
+
+def _rank_numbers_for_generation(features, method: str, variation: int = 0):
+    df = features.copy()
+    df["number"] = df["number"].astype(str).str.zfill(2)
+    df["number_int"] = df["number"].astype(int)
+    rng = np.random.default_rng(42 + int(variation))
+
+    score = pd.to_numeric(df.get("score_total", 0), errors="coerce").fillna(0.0)
+    score_norm = (score - score.min()) / (score.max() - score.min() + 1e-12)
+    df["_score_norm"] = score_norm
+
+    if method == "random":
+        return df.sample(frac=1, random_state=42 + int(variation))["number"].tolist()
+
+    if method == "balanced":
+        freq = pd.to_numeric(df.get("freq_global", 0), errors="coerce").fillna(0.0)
+        freq_norm = (freq - freq.min()) / (freq.max() - freq.min() + 1e-12)
+        parity_balance = np.where(df["number_int"] % 2 == 0, 0.5, 0.55)
+        df["_generation_score"] = (df["_score_norm"] * 0.72) + ((1 - abs(freq_norm - 0.5)) * 0.18) + (parity_balance * 0.10)
+    elif method == "coverage":
+        delay = pd.to_numeric(df.get("delay_last", 0), errors="coerce").fillna(0.0)
+        delay_norm = (delay - delay.min()) / (delay.max() - delay.min() + 1e-12)
+        df["_generation_score"] = (df["_score_norm"] * 0.55) + (delay_norm * 0.35) + rng.normal(0, 0.03, len(df))
+    else:
+        df["_generation_score"] = df["_score_norm"] + rng.normal(0, 0.04, len(df))
+
+    return df.sort_values("_generation_score", ascending=False)["number"].tolist()
+
+
+def generate_game(features, selection, method: str, game_size: int = 50, variation: int = 0):
     """Generate a game of up to `game_size` numbers (strings like '00'..'99').
 
     - `selection` may contain preselected numbers (strings or ints converted elsewhere).
-    - `method` supports 'top_score' and 'random'.
+    - `method` supports scoring, balanced, coverage, and random profiles.
     - Ensures we never request more random choices than available.
     """
-    top_numbers = features.sort_values("score_total", ascending=False)["number"].tolist()
-    selected = list(selection)
-    # normalize selection as strings and unique
-    selected = [str(s).zfill(2) for s in selected]
-    selected = list(dict.fromkeys(selected))
+    selected = _normalize_game_numbers(selection, limit=game_size)
 
     needed = max(0, game_size - len(selected))
-    if method == "top_score":
-        numbers = [n for n in top_numbers if n not in selected]
-        chosen = numbers[:needed]
-    elif method == "random":
-        remaining = [n for n in top_numbers if n not in selected]
+    remaining = [n for n in _rank_numbers_for_generation(features, method, variation) if n not in selected]
+    if method == "random":
         take = min(len(remaining), needed)
-        chosen = list(np.random.choice(remaining, size=take, replace=False)) if take > 0 else []
+        rng = np.random.default_rng(42 + int(variation))
+        chosen = list(rng.choice(remaining, size=take, replace=False)) if take > 0 else []
     else:
-        chosen = []
+        offset = int(variation) % max(len(remaining), 1)
+        rotated = remaining[offset:] + remaining[:offset]
+        chosen = rotated[:needed]
 
     result = selected + chosen
-    result = sorted(result)[:game_size]
-    return result
+    return sorted(result[:game_size])
+
+
+def generate_games(features, selection, method: str, n_games: int = 1, game_size: int = 50, variation: int = 0):
+    """Generate multiple distinct games of size `game_size`."""
+    games = []
+    seen = set()
+    selected = _normalize_game_numbers(selection, limit=game_size)
+
+    if n_games <= 1:
+        return [generate_game(features, selected, method, game_size, variation=variation)]
+
+    top_numbers = _rank_numbers_for_generation(features, method, variation)
+    remaining = [n for n in top_numbers if n not in selected]
+    needed = max(0, game_size - len(selected))
+
+    if method == "random":
+        attempts = 0
+        while len(games) < n_games and attempts < n_games * 10:
+            attempts += 1
+            chosen = list(np.random.choice(remaining, size=needed, replace=False)) if needed > 0 else []
+            game = tuple(sorted(selected + chosen))[:game_size]
+            if game not in seen:
+                seen.add(game)
+                games.append(list(game))
+    else:
+        for i in range(n_games):
+            if needed <= 0:
+                game = tuple(sorted(selected)[:game_size])
+            else:
+                offset = (i * max(1, needed // max(1, n_games))) % max(1, len(remaining))
+                numbers = remaining[offset:] + remaining[:offset]
+                chosen = numbers[:needed]
+                game = tuple(sorted(selected + chosen))[:game_size]
+            if game not in seen:
+                seen.add(game)
+                games.append(list(game))
+
+    # if we could not build enough distinct games, fill with deterministic variations
+    i = 0
+    while len(games) < n_games and i < len(remaining):
+        taken = remaining[i : i + needed]
+        game = tuple(sorted(selected + taken))[:game_size]
+        if game not in seen:
+            seen.add(game)
+            games.append(list(game))
+        i += max(1, needed // 2 if needed > 1 else 1)
+
+    return games
+
+
+def generate_covering_games(
+    features,
+    selection,
+    method: str,
+    n_games: int = 4,
+    universe_size: int = 80,
+    game_size: int = 50,
+    variation: int = 0,
+):
+    """Build a fechamento: several 50-number games from a larger ranked universe."""
+    fixed = _normalize_game_numbers(selection, limit=game_size)
+    universe_size = max(game_size, min(100, int(universe_size)))
+    ranked = _rank_numbers_for_generation(features, method, variation)
+    pool = list(dict.fromkeys(fixed + [n for n in ranked if n not in fixed]))[:universe_size]
+    flexible_pool = [n for n in pool if n not in fixed]
+    needed = max(0, game_size - len(fixed))
+
+    games = []
+    seen = set()
+    for index in range(max(1, int(n_games))):
+        if needed <= 0:
+            game = tuple(sorted(fixed[:game_size]))
+        elif len(flexible_pool) <= needed:
+            chosen = flexible_pool[:needed]
+            game = tuple(sorted((fixed + chosen)[:game_size]))
+        else:
+            step = max(1, int(np.ceil(len(flexible_pool) / max(1, n_games))))
+            start = (index * step + variation) % len(flexible_pool)
+            rotated = flexible_pool[start:] + flexible_pool[:start]
+            chosen = rotated[:needed]
+            if len(chosen) < needed:
+                chosen += [n for n in flexible_pool if n not in chosen][: needed - len(chosen)]
+            game = tuple(sorted((fixed + chosen)[:game_size]))
+        if game not in seen:
+            seen.add(game)
+            games.append(list(game))
+
+    return games
+
+
+def append_generated_games(new_games):
+    current_games = st.session_state.get("generated_games") or []
+    st.session_state.generated_games = current_games + list(new_games)
+    return st.session_state.generated_games
 
 
 def run_dashboard() -> None:
@@ -380,6 +510,7 @@ def run_dashboard() -> None:
     run_montecarlo = st.sidebar.button("Executar Monte Carlo")
     run_model = st.sidebar.button("Treinar Modelos")
     run_model_fast = st.sidebar.button("Treinar modelos rápido")
+    num_games = st.sidebar.slider("Número de jogos a gerar", min_value=1, max_value=100, value=8, step=1)
     run_backtest = st.sidebar.button("Executar Backtest")
     run_genetic = st.sidebar.button("Executar Genetic Search")
     run_correlation = st.sidebar.button("Calcular Correlações")
@@ -623,88 +754,169 @@ def run_dashboard() -> None:
 
     with tabs[4]:
         st.subheader("Gerador de Jogos")
-        selected_numbers = st.multiselect(
-            "Selecione até 50 números",
-            [f"{n:02d}" for n in range(100)],
-            max_selections=50,
-        )
-        generate_method = st.radio(
-            "Método de geração",
-            ["top_score", "random"],
-            format_func=lambda v: {
-                "top_score": "Top Score",
-                "random": "Aleatório",
-            }[v],
-        )
 
-        if len(selected_numbers) < 50:
-            st.info(
-                f"Selecione até 50 números. O jogo será completado automaticamente para 50 números. Atualmente selecionados: {len(selected_numbers)}."
+        # Use new visual game selector panel
+        game_config = render_game_selector_panel()
+        selected_numbers = game_config.get("numbers", [])
+
+        st.divider()
+
+        # Generation options
+        col1, col2 = st.columns(2)
+        with col1:
+            generate_method = st.radio(
+                "Método de cada jogo",
+                ["top_score", "balanced", "coverage", "random"],
+                format_func=lambda v: {
+                    "top_score": "Pontuação Máxima",
+                    "balanced": "Balanceado",
+                    "coverage": "Cobertura/Atraso",
+                    "random": "Aleatório",
+                }[v],
+                horizontal=False,
             )
-        elif len(selected_numbers) == 50:
-            st.success("Selecionou 50 números. Pronto para gerar o jogo.")
+            if "use_closure_games" not in st.session_state:
+                st.session_state.use_closure_games = True
+            use_closure = st.checkbox("Usar fechamento", key="use_closure_games")
+            closure_universe = st.slider("Universo do fechamento", min_value=50, max_value=100, value=80, step=1)
+            closure_games = st.slider("Jogos no fechamento", min_value=2, max_value=30, value=max(4, min(10, num_games)), step=1)
+            st.caption("No fechamento, o sistema escolhe um universo maior e distribui esses números em jogos de 50 para aumentar a cobertura.")
 
-        if features is None:
-            if not st.session_state.get("features_background_running"):
-                st.session_state["features_background_running"] = True
-                threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
-                st.info("Preparação de features iniciada em background. Use 'Atualizar agora' quando terminar.")
-            else:
-                st.info("Preparação de features rodando em background...")
-
-            refresh_generator_tab = st.button("Atualizar agora", key="refresh_generator_tab")
-            if refresh_generator_tab:
-                logger.info("Botão 'Atualizar agora' (gerador) pressionado pelo usuário")
-                signature = _get_cache_signature(draws)
-                f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
-                gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
-                mr = _load_from_disk_cache(MARKOV_CACHE_FILE, signature)
-                hm = _load_from_disk_cache(HMM_CACHE_FILE, signature)
-                if f is not None:
-                    st.session_state.features = f
-                    if gm is not None:
-                        st.session_state.graph_metrics = gm
-                    if mr is not None:
-                        st.session_state.markov_report = mr
-                    if hm is not None:
-                        st.session_state.hmm_report = hm
-                    logger.info("Loaded features from disk cache via 'Atualizar agora' (gerador)")
-                    st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+        with col2:
+            st.markdown("### Geração")
+            
+            if features is None:
+                if not st.session_state.get("features_background_running"):
+                    st.session_state["features_background_running"] = True
+                    threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
+                    st.info("Preparação de features iniciada em background.")
                 else:
-                    features = ensure_features(draws)
-                    if features is not None:
+                    st.info("Preparação de features rodando...")
+
+                refresh_generator_tab = st.button("Atualizar agora", key="refresh_generator_tab")
+                if refresh_generator_tab:
+                    logger.info("Botão 'Atualizar agora' (gerador) pressionado pelo usuário")
+                    signature = _get_cache_signature(draws)
+                    f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
+                    gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
+                    mr = _load_from_disk_cache(MARKOV_CACHE_FILE, signature)
+                    hm = _load_from_disk_cache(HMM_CACHE_FILE, signature)
+                    if f is not None:
+                        st.session_state.features = f
+                        if gm is not None:
+                            st.session_state.graph_metrics = gm
+                        if mr is not None:
+                            st.session_state.markov_report = mr
+                        if hm is not None:
+                            st.session_state.hmm_report = hm
+                        logger.info("Loaded features from disk cache via 'Atualizar agora' (gerador)")
                         st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+                    else:
+                        features = ensure_features(draws)
+                        if features is not None:
+                            st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+            else:
+                if st.button("Gerar 1 Jogo", key="button_generate_game", use_container_width=True):
+                    # Get fixed numbers from game_config
+                    fixed_numbers = game_config.get("fixed", [])
+                    base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
+                    st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
+                    variation = st.session_state.generation_variation
+                    
+                    if use_closure:
+                        generated_games = generate_covering_games(
+                            features,
+                            base_selection,
+                            generate_method,
+                            n_games=closure_games,
+                            universe_size=closure_universe,
+                            game_size=50,
+                            variation=variation,
+                        )
+                        append_generated_games(generated_games)
+                        covered = len(set().union(*[set(game) for game in generated_games])) if generated_games else 0
+                        st.success(f"✓ Fechamento gerado: {len(generated_games)} jogos de 50 cobrindo {covered} números")
+                    else:
+                        generated_game = generate_game(features, base_selection, generate_method, game_size=50, variation=variation)
+                        append_generated_games([generated_game])
+                        st.success(f"✓ Jogo gerado com {len(generated_game)} números")
+                    
+                    # Clear selection unless numbers are fixed
+                    if len(fixed_numbers) == 0:
+                        st.session_state.ui_selected_numbers = set()
 
-        if st.button("Gerar jogo", key="button_generate_game"):
-            if features is None:
-                if not st.session_state.get("features_background_running"):
-                    st.session_state["features_background_running"] = True
-                    threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
-                    st.info("Preparação de features iniciada em background. Use 'Atualizar agora' quando terminar.")
-                else:
-                    st.info("Preparação de features rodando em background...")
-                with st.spinner("Preparando features para geração de jogo..."):
-                    features = ensure_features(draws)
-            generated_game = generate_game(features, selected_numbers, generate_method)
-            st.success(f"Jogo gerado com {len(generated_game)} números")
-            st.write(sorted(generated_game))
+                if st.button(f"Gerar {num_games} Jogos", key="button_generate_games", use_container_width=True):
+                    # Get fixed numbers from game_config
+                    fixed_numbers = game_config.get("fixed", [])
+                    base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
+                    st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
+                    variation = st.session_state.generation_variation
+                    
+                    if use_closure:
+                        generated_games = generate_covering_games(
+                            features,
+                            base_selection,
+                            generate_method,
+                            n_games=closure_games,
+                            universe_size=closure_universe,
+                            game_size=50,
+                            variation=variation,
+                        )
+                        covered = len(set().union(*[set(game) for game in generated_games])) if generated_games else 0
+                        st.success(f"✓ Fechamento gerado: {len(generated_games)} jogos de 50 cobrindo {covered} números")
+                    else:
+                        generated_games = generate_games(
+                            features,
+                            base_selection,
+                            generate_method,
+                            n_games=num_games,
+                            game_size=50,
+                            variation=variation,
+                        )
+                    
+                    append_generated_games(generated_games)
+                    if not use_closure:
+                        st.success(f"✓ {len(generated_games)} jogos gerados com sucesso")
+                    
+                    # Clear selection unless numbers are fixed
+                    if len(fixed_numbers) == 0:
+                        st.session_state.ui_selected_numbers = set()
 
-        if st.button("Completar com top score", key="button_complete_top_score"):
-            if features is None:
-                if not st.session_state.get("features_background_running"):
-                    st.session_state["features_background_running"] = True
-                    threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
-                    st.info("Preparação de features iniciada em background. Use 'Atualizar agora' quando terminar.")
-                else:
-                    st.info("Preparação de features rodando em background...")
-                with st.spinner("Preparando features para completar o jogo..."):
-                    features = ensure_features(draws)
-            generated_game = generate_game(features, selected_numbers, "top_score")
-            st.success("Jogo completo gerado usando top score")
-            st.write(sorted(generated_game))
+                if st.button("Completar com Pontuação", key="button_complete_top_score", use_container_width=True):
+                    # Get fixed numbers from game_config
+                    fixed_numbers = game_config.get("fixed", [])
+                    base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
+                    st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
+                    variation = st.session_state.generation_variation
+                    
+                    if use_closure:
+                        generated_games = generate_covering_games(
+                            features,
+                            base_selection,
+                            "top_score",
+                            n_games=closure_games,
+                            universe_size=closure_universe,
+                            game_size=50,
+                            variation=variation,
+                        )
+                        append_generated_games(generated_games)
+                        covered = len(set().union(*[set(game) for game in generated_games])) if generated_games else 0
+                        st.success(f"✓ Fechamento por pontuação gerado cobrindo {covered} números")
+                    else:
+                        generated_game = generate_game(features, base_selection, "top_score", game_size=50, variation=variation)
+                        append_generated_games([generated_game])
+                        st.success("✓ Jogo completo gerado")
+                    
+                    # Clear selection unless numbers are fixed
+                    if len(fixed_numbers) == 0:
+                        st.session_state.ui_selected_numbers = set()
 
-        if features is None:
-            st.info("Clique em 'Preparar features avançadas' para habilitar o gerador de jogos ou aguarde a preparação em background.")
+        st.divider()
+
+        # Display generated games
+        generated_games = st.session_state.get("generated_games")
+        if generated_games is not None:
+            render_generated_games_gallery(generated_games)
 
     with tabs[5]:
         st.subheader("Simulação Monte Carlo")
