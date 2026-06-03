@@ -18,16 +18,27 @@ def build_feature_matrix(
     graph_metrics: Optional[pd.DataFrame] = None,
     markov_report: Optional[Dict[str, pd.DataFrame]] = None,
     hmm_report: Optional[Dict[str, pd.Series]] = None,
+    *,
+    include_last_draw: bool = True,
 ) -> pd.DataFrame:
-    logger.info("Building feature matrix for Lotomania numbers")
+    """Build per-number features.
+
+    When ``include_last_draw`` is False, metrics are computed only through the
+    penultimate draw (no peeking at the latest result). Use that for honest
+    evaluation of the most recent contest.
+    """
+    if not include_last_draw and len(draws) > 1:
+        draws = draws.iloc[:-1].copy()
+    logger.info("Building feature matrix for Lotomania numbers (%d draws)", len(draws))
     frequency = _calculate_frequency_windows(draws)
     delay_features = _calculate_delay_metrics(draws)
     position_features = _calculate_position_metrics(draws)
+    recent_result_features = _calculate_recent_result_metrics(draws)
     entropy_features = _calculate_entropy_metrics(draws)
     trend_features = _calculate_frequency_trend(frequency)
 
     base = pd.DataFrame({"number": [f"{n:02d}" for n in NUMBER_RANGE]})
-    for feature_df in (frequency, delay_features, position_features, entropy_features, trend_features):
+    for feature_df in (frequency, delay_features, position_features, recent_result_features, entropy_features, trend_features):
         base = base.merge(feature_df, on="number", how="left")
 
     if graph_metrics is not None:
@@ -123,6 +134,40 @@ def _calculate_position_metrics(draws: pd.DataFrame) -> pd.DataFrame:
                 "position_entropy": compute_shannon_entropy([str(pos) for pos in number_positions]) if number_positions else 0.0,
                 "appearance_rate": len(number_positions) / max(len(draws), 1),
                 "recency": len(draws) - last_seen[number] if last_seen[number] >= 0 else len(draws),
+            }
+        )
+    return pd.DataFrame(output)
+
+
+def _calculate_recent_result_metrics(draws: pd.DataFrame) -> pd.DataFrame:
+    numbers = [f"{n:02d}" for n in NUMBER_RANGE]
+    if draws.empty:
+        return pd.DataFrame({
+            "number": numbers,
+            "last_draw_hit": 0,
+            "last_3_draws_hits": 0,
+            "last_5_draws_hits": 0,
+            "last_draw_position": 0,
+        })
+
+    last_draw = draws.iloc[-1]
+    last_draw_numbers = [str(last_draw[col]).zfill(2) for col in DRAW_COLUMNS]
+    last_positions = {number: pos for pos, number in enumerate(last_draw_numbers, start=1)}
+
+    recent_3 = draws.tail(3)[DRAW_COLUMNS].values.flatten()
+    recent_5 = draws.tail(5)[DRAW_COLUMNS].values.flatten()
+    recent_3_counts = pd.Series(recent_3).astype(str).str.zfill(2).value_counts()
+    recent_5_counts = pd.Series(recent_5).astype(str).str.zfill(2).value_counts()
+
+    output = []
+    for number in numbers:
+        output.append(
+            {
+                "number": number,
+                "last_draw_hit": int(number in last_positions),
+                "last_3_draws_hits": int(recent_3_counts.get(number, 0)),
+                "last_5_draws_hits": int(recent_5_counts.get(number, 0)),
+                "last_draw_position": int(last_positions.get(number, 0)),
             }
         )
     return pd.DataFrame(output)

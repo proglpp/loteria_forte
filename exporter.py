@@ -37,6 +37,14 @@ class Exporter:
     def save_backtests(self, df: pd.DataFrame) -> None:
         _save_dataframe(df, "backtests")
 
+    def save_last_draw_evaluation(self, payload: dict) -> None:
+        json_path = EXPORT_DIR / "last_draw_evaluation.json"
+        import json as json_module
+
+        with open(json_path, "w", encoding="utf-8") as handle:
+            json_module.dump(payload, handle, ensure_ascii=False, indent=2)
+        logger.info("Exported last draw evaluation to %s", json_path)
+
     def export_all(
         self,
         draws: pd.DataFrame,

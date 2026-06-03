@@ -1,16 +1,24 @@
 import pandas as pd
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 
 from data_loader import LotomaniaDataLoader
 from feature_engineering import build_feature_matrix
+import ml_engine as ml_engine_module
 from ml_engine import MachineLearningEngine
 from preprocessing import preprocess_draws
 from config import DATA_FILE, DATABASE_FILE
 
 
-def test_machine_learning_engine_predicts():
+def test_machine_learning_engine_predicts(monkeypatch):
+    fast_models = {
+        "random_forest": RandomForestClassifier(n_estimators=5, random_state=42, n_jobs=1),
+        "extra_trees": ExtraTreesClassifier(n_estimators=5, random_state=42, n_jobs=1),
+    }
+    monkeypatch.setattr(ml_engine_module, "BASE_MODELS", fast_models)
+
     loader = LotomaniaDataLoader(DATA_FILE, DATABASE_FILE)
     draws = loader.load_data()
-    preprocessed = preprocess_draws(draws)
+    preprocessed = preprocess_draws(draws).tail(80).reset_index(drop=True)
     features = build_feature_matrix(preprocessed)
 
     ml_engine = MachineLearningEngine(preprocessed, features, min_history=20)
@@ -18,19 +26,20 @@ def test_machine_learning_engine_predicts():
 
     assert report.shape[0] == 100
     assert "prob_mean" in report.columns
-    assert report["prob_mean"].between(0.0, 1.0).all()
+    assert report["prob_weighted"].between(0.0, 1.0).all()
     assert report["target"].isin([0, 1]).all()
+
+    next_report = ml_engine.predict_next_draw()
+    assert next_report.shape[0] == 100
+    assert "prob_weighted" in next_report.columns
+    assert next_report["target"].isna().all()
 
 
 def test_machine_learning_engine_skips_textual_community():
-    columns = [f"draw_{i}" for i in range(1, 6)]
+    columns = [f"Bola{i}" for i in range(1, 21)]
     draws = pd.DataFrame([
-        {col: f"{i:02d}" for col, i in zip(columns, [1, 2, 3, 4, 5])},
-        {col: f"{i:02d}" for col, i in zip(columns, [6, 7, 8, 9, 10])},
-        {col: f"{i:02d}" for col, i in zip(columns, [11, 12, 13, 14, 15])},
-        {col: f"{i:02d}" for col, i in zip(columns, [16, 17, 18, 19, 20])},
-        {col: f"{i:02d}" for col, i in zip(columns, [1, 2, 3, 4, 5])},
-        {col: f"{i:02d}" for col, i in zip(columns, [6, 7, 8, 9, 10])},
+        {col: f"{(start + offset) % 100:02d}" for offset, col in enumerate(columns)}
+        for start in range(1, 8)
     ])
     features = pd.DataFrame([
         {"number": "01", "community": "C1", "community_code": 1},

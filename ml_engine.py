@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -24,6 +24,18 @@ BASE_MODELS = {
     "catboost": CatBoostClassifier(verbose=0, random_state=42),
 }
 
+# Static feature columns that leak the latest draw outcome into ML inputs.
+LEAKY_STATIC_KEYS = {
+    "number",
+    "score_total",
+    "target",
+    "last_draw_hit",
+    "last_3_draws_hits",
+    "last_5_draws_hits",
+    "last_draw_position",
+    "community",
+}
+
 
 class MachineLearningEngine:
     def __init__(self, draws: pd.DataFrame, features: Optional[pd.DataFrame] = None, min_history: int = 20):
@@ -35,8 +47,14 @@ class MachineLearningEngine:
         self.min_history = min_history
         self.feature_importances_ = None
         self.model_metrics_ = None
+        self.model_weights_: Dict[str, float] = {}
 
-    def _build_feature_rows(self, history: pd.DataFrame, target_numbers: set, draw_index: int) -> pd.DataFrame:
+    def _build_feature_rows(
+        self,
+        history: pd.DataFrame,
+        target_numbers: Set[str],
+        draw_index: int,
+    ) -> pd.DataFrame:
         numbers = [f"{n:02d}" for n in NUMBER_RANGE]
         positions = {number: [] for number in numbers}
         last_seen = {number: -1 for number in numbers}
@@ -82,13 +100,7 @@ class MachineLearningEngine:
                 else:
                     static_items = dict(static_values).items()
                 for key, value in static_items:
-                    if key == "community":
-                        if "community_code" in self.number_features.columns:
-                            try:
-                                cc = self.number_features.loc[number, "community_code"]
-                                row["feat_community_code"] = float(cc) if not pd.isna(cc) else 0.0
-                            except Exception:
-                                row["feat_community_code"] = 0.0
+                    if key in LEAKY_STATIC_KEYS:
                         continue
                     if key == "community_code":
                         try:
@@ -113,18 +125,20 @@ class MachineLearningEngine:
             raise ValueError("Not enough historical draws to build training data")
         return pd.concat(training_frames, ignore_index=True)
 
-    def _prepare_target_data(self) -> pd.DataFrame:
-        if len(self.draws) < 2:
+    def _prepare_target_data(self, *, for_next_draw: bool = False) -> pd.DataFrame:
+        if len(self.draws) < 2 and not for_next_draw:
             raise ValueError("Not enough draw history to build prediction features")
-        history = self.draws.iloc[:-1]
-        target_numbers = set(self.draws.iloc[-1][DRAW_COLUMNS].tolist())
-        return self._build_feature_rows(history, target_numbers, len(self.draws) - 1)
+        if for_next_draw:
+            history = self.draws
+            target_numbers: Set[str] = set()
+            draw_index = len(self.draws)
+        else:
+            history = self.draws.iloc[:-1]
+            target_numbers = set(self.draws.iloc[-1][DRAW_COLUMNS].tolist())
+            draw_index = len(self.draws) - 1
+        return self._build_feature_rows(history, target_numbers, draw_index)
 
-    def train_models(self) -> pd.DataFrame:
-        logger.info("Training machine learning models")
-        training_data = self._prepare_training_data()
-        target_data = self._prepare_target_data()
-
+    def _fit_and_predict(self, target_data: pd.DataFrame, training_data: pd.DataFrame) -> pd.DataFrame:
         X_train = training_data.drop(columns=["draw_index", "number", "target"])
         y_train = training_data["target"].astype(int).to_numpy()
         X_target = target_data.drop(columns=["draw_index", "number", "target"])
@@ -140,19 +154,26 @@ class MachineLearningEngine:
         self.feature_importances_ = pd.Series(dtype=float)
         importance_models = 0
         model_metrics = []
+        self.model_weights_ = {}
 
         predictions = {"number": target_data["number"].tolist()}
+        raw_weights = []
         for model_name, model in BASE_MODELS.items():
             prob_values = np.zeros(len(X_target), dtype=float)
             metrics = {"model": model_name, "status": "failed", "cv_log_loss": None}
+            weight = 0.0
             try:
                 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
                 if len(set(y_train)) > 1:
                     cv_pred = cross_val_predict(model, X_train_scaled, y_train, cv=cv, method="predict_proba")[:, 1]
-                    metrics["cv_log_loss"] = float(log_loss(y_train, np.clip(cv_pred, 1e-12, 1 - 1e-12)))
+                    cv_loss = float(log_loss(y_train, np.clip(cv_pred, 1e-12, 1 - 1e-12)))
+                    metrics["cv_log_loss"] = cv_loss
+                    weight = 1.0 / (cv_loss + 1e-6)
                 model.fit(X_train_scaled, y_train)
                 prob_values = model.predict_proba(X_target_scaled)[:, 1]
                 metrics["status"] = "ok"
+                if weight == 0.0:
+                    weight = 1.0
                 if hasattr(model, "feature_importances_"):
                     importances = pd.Series(model.feature_importances_, index=X_train.columns)
                     self.feature_importances_ = (
@@ -165,6 +186,10 @@ class MachineLearningEngine:
                 logger.warning("Model %s failed during training: %s", model_name, exc)
             predictions[f"prob_{model_name}"] = prob_values
             model_metrics.append(metrics)
+            raw_weights.append((model_name, weight))
+
+        weight_sum = sum(weight for _, weight in raw_weights) or 1.0
+        self.model_weights_ = {name: weight / weight_sum for name, weight in raw_weights}
 
         if importance_models > 0:
             self.feature_importances_ = (self.feature_importances_ / importance_models).sort_values(ascending=False)
@@ -173,7 +198,32 @@ class MachineLearningEngine:
 
         self.model_metrics_ = pd.DataFrame(model_metrics)
         df = pd.DataFrame(predictions)
-        df["target"] = target_data["target"].astype(int).values
-        df["prob_mean"] = df[[col for col in df.columns if col.startswith("prob_")]].mean(axis=1)
-        df = df.sort_values("prob_mean", ascending=False).reset_index(drop=True)
+        prob_cols = [col for col in df.columns if col.startswith("prob_")]
+        weighted = np.zeros(len(df), dtype=float)
+        for col in prob_cols:
+            model_name = col.replace("prob_", "", 1)
+            weighted += df[col].to_numpy() * self.model_weights_.get(model_name, 0.0)
+        if weighted.sum() <= 0:
+            weighted = df[prob_cols].mean(axis=1).to_numpy()
+        df["prob_weighted"] = np.clip(weighted, 0.0, 1.0)
+        df["prob_mean"] = df[prob_cols].mean(axis=1)
+        if "target" in target_data.columns and target_data["target"].notna().any():
+            df["target"] = target_data["target"].astype(int).values
         return df
+
+    def train_models(self) -> pd.DataFrame:
+        logger.info("Training machine learning models (evaluate last draw)")
+        training_data = self._prepare_training_data()
+        target_data = self._prepare_target_data(for_next_draw=False)
+        df = self._fit_and_predict(target_data, training_data)
+        return df.sort_values("prob_weighted", ascending=False).reset_index(drop=True)
+
+    def predict_next_draw(self) -> pd.DataFrame:
+        logger.info("Training machine learning models (predict next draw)")
+        training_data = self._prepare_training_data()
+        if training_data.empty:
+            raise ValueError("Not enough historical draws to train next-draw models")
+        target_data = self._prepare_target_data(for_next_draw=True)
+        df = self._fit_and_predict(target_data, training_data)
+        df["target"] = np.nan
+        return df.sort_values("prob_weighted", ascending=False).reset_index(drop=True)

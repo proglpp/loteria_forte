@@ -1,8 +1,10 @@
 """Visual UI components for game selection and generation."""
 
-import streamlit as st
-import pandas as pd
+from html import escape
 from typing import List, Set, Tuple
+
+import pandas as pd
+import streamlit as st
 
 
 def _normalize_number_set(values) -> Set[str]:
@@ -236,6 +238,41 @@ def render_generated_games_gallery(games: List[List[str]]) -> None:
         games: List of games, each game is a list of number strings
     """
     st.markdown("### Jogos Gerados")
+    st.markdown(
+        """
+        <style>
+            .generated-game-numbers {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.35rem;
+                width: 100%;
+                min-width: 0;
+                padding: 0.75rem 1rem;
+                border-radius: 0.5rem;
+                background: rgba(49, 51, 63, 0.38);
+                border: 1px solid rgba(250, 250, 250, 0.08);
+            }
+
+            .generated-game-number {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 2.25rem;
+                height: 1.75rem;
+                padding: 0 0.35rem;
+                border-radius: 0.35rem;
+                background: rgba(250, 250, 250, 0.08);
+                color: inherit;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+                font-size: 0.9rem;
+                font-weight: 700;
+                line-height: 1;
+                white-space: nowrap;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     
     if not games:
         st.info("Nenhum jogo gerado ainda.")
@@ -247,8 +284,20 @@ def render_generated_games_gallery(games: List[List[str]]) -> None:
             
             with col1:
                 # Display numbers
-                game_str = ", ".join(sorted([f"{int(n):02d}" for n in game]))
-                st.code(game_str, language=None)
+                game_numbers = sorted([f"{int(n):02d}" for n in game])
+                game_str = ", ".join(game_numbers)
+                number_chips = "".join(
+                    f'<span class="generated-game-number">{escape(number)}</span>'
+                    for number in game_numbers
+                )
+                st.markdown(
+                    f"""
+                    <div class="generated-game-numbers" aria-label="Números do jogo {idx}">
+                        {number_chips}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
             
             with col2:
                 # Quick stats

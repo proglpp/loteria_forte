@@ -38,7 +38,11 @@ def load_cached_draws(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         with open(CACHE_FILE, "rb") as handle:
             cached = pickle.load(handle)
         if not cached.empty and len(cached) == len(df):
-            return cached
+            if "Concurso" in df.columns and "Concurso" in cached.columns:
+                if int(cached["Concurso"].iloc[-1]) == int(df["Concurso"].iloc[-1]):
+                    return cached
+            else:
+                return cached
     except Exception as exc:
         logger.warning("Failed to load cache: %s", exc)
     return None
