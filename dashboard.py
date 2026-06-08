@@ -25,6 +25,15 @@ from ml_engine import MachineLearningEngine
 from ensemble_engine import EnsembleEngine
 from evaluation_engine import evaluate_last_draw
 from statistics_engine import build_statistics_report
+from ai_learning_engine import (
+    DEFAULT_EVAL_DRAW,
+    apply_learning_to_features,
+    build_learning_profile,
+    evaluate_games_against_draw,
+    load_learning_records,
+    normalize_numbers,
+    record_learning_feedback,
+)
 import ml_engine as ml_engine_module
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 from lightgbm import LGBMClassifier
@@ -93,6 +102,186 @@ def render_multi_series_chart(df: pd.DataFrame, x: str, y_cols: list[str], title
     st.markdown(f"### {title}")
     chart_data = df.set_index(x)[y_cols]
     st.line_chart(chart_data)
+
+
+def _draw_number_sets(draws: pd.DataFrame) -> list[set[str]]:
+    return [
+        {str(row[col]).zfill(2) for col in DRAW_COLUMNS}
+        for _, row in draws.reset_index(drop=True).iterrows()
+    ]
+
+
+def build_movement_report(draws: pd.DataFrame, rows: int = 12, strength_window: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
+    numbers = [f"{number:02d}" for number in range(100)]
+    rows = max(1, min(int(rows), len(draws)))
+    strength_window = max(3, min(int(strength_window), len(draws)))
+    draw_sets = _draw_number_sets(draws)
+    recent_sets = draw_sets[-strength_window:]
+    previous_sets = draw_sets[-(strength_window * 2) : -strength_window] if len(draw_sets) > strength_window else []
+
+    recent_counts = pd.Series(0, index=numbers, dtype=float)
+    previous_counts = pd.Series(0, index=numbers, dtype=float)
+    global_counts = pd.Series(0, index=numbers, dtype=float)
+    for draw_set in recent_sets:
+        for number in draw_set:
+            recent_counts[number] += 1
+    for draw_set in previous_sets:
+        for number in draw_set:
+            previous_counts[number] += 1
+    for draw_set in draw_sets:
+        for number in draw_set:
+            global_counts[number] += 1
+
+    delay = {}
+    for number in numbers:
+        last_seen = next((idx for idx, draw_set in enumerate(reversed(draw_sets), start=0) if number in draw_set), len(draw_sets))
+        delay[number] = float(last_seen)
+    delay_series = pd.Series(delay)
+
+    expected_recent = strength_window * 20 / 100
+    freq_norm = _minmax(recent_counts)
+    trend_norm = _minmax(recent_counts - previous_counts.reindex(numbers, fill_value=0))
+    delay_norm = _minmax(delay_series)
+    global_norm = _minmax(global_counts)
+    balance_pull = 1.0 - ((recent_counts - expected_recent).abs() / max(expected_recent, 1.0)).clip(upper=1.0)
+    score = (
+        0.34 * freq_norm
+        + 0.25 * delay_norm
+        + 0.18 * trend_norm
+        + 0.13 * balance_pull
+        + 0.10 * global_norm
+    )
+
+    q25, q55, q78 = score.quantile([0.25, 0.55, 0.78]).tolist()
+    summary_rows = []
+    for number in numbers:
+        value = float(score[number])
+        if value >= q78:
+            status = "FORTE"
+        elif value >= q55:
+            status = "BOM"
+        elif value <= q25:
+            status = "FRACO"
+        else:
+            status = "OBS"
+        summary_rows.append(
+            {
+                "dezena": number,
+                "forca": round(value * 100, 1),
+                "status": status,
+                "freq_janela": int(recent_counts[number]),
+                "tendencia": int(recent_counts[number] - previous_counts.get(number, 0)),
+                "atraso": int(delay_series[number]),
+                "freq_total": int(global_counts[number]),
+            }
+        )
+    summary = pd.DataFrame(summary_rows).sort_values(["forca", "freq_janela"], ascending=False).reset_index(drop=True)
+
+    movement_rows = []
+    for _, row in draws.tail(rows).iterrows():
+        present = {str(row[col]).zfill(2) for col in DRAW_COLUMNS}
+        movement_row = {"Concurso": str(row["Concurso"])}
+        for number in numbers:
+            movement_row[number] = number if number in present else ""
+        movement_rows.append(movement_row)
+
+    cycle_window = min(5, len(draw_sets))
+    cycle_sets = draw_sets[-cycle_window:]
+    cycle_seen = set().union(*cycle_sets) if cycle_sets else set()
+    missing_cycle = sorted(set(numbers) - cycle_seen)
+    movement_rows.append({"Concurso": "FREQ"} | {number: int(recent_counts[number]) for number in numbers})
+    movement_rows.append({"Concurso": "ATRASO"} | {number: int(delay_series[number]) for number in numbers})
+    movement_rows.append({"Concurso": "FORCA"} | {number: int(round(score[number] * 100)) for number in numbers})
+    movement_rows.append({"Concurso": "FALTA CICLO"} | {number: ("*" if number in missing_cycle else "") for number in numbers})
+    movement = pd.DataFrame(movement_rows)
+    movement.attrs["score_map"] = score.to_dict()
+    movement.attrs["status_map"] = summary.set_index("dezena")["status"].to_dict()
+    return movement, summary
+
+
+def style_movement_report(df: pd.DataFrame):
+    score_map = df.attrs.get("score_map", {})
+    status_map = df.attrs.get("status_map", {})
+
+    def style_cell(value, column):
+        if column == "Concurso":
+            return "background-color: #5b159f; color: white; font-weight: 700; text-align: center;"
+        if value == "":
+            status = status_map.get(column, "OBS")
+            background = {
+                "FORTE": "#e8f7ee",
+                "BOM": "#edf4ff",
+                "OBS": "#fff8dc",
+                "FRACO": "#fdecec",
+            }.get(status, "#ffffff")
+            return f"background-color: {background}; color: transparent;"
+        if value == "*":
+            return "background-color: #fff0b3; color: #805800; font-weight: 800; text-align: center;"
+        try:
+            numeric = float(value)
+            if df.loc[df.index[df.eq(value).any(axis=1)][0], "Concurso"] in {"FREQ", "ATRASO", "FORCA"}:
+                intensity = min(max(numeric / 100, 0.15), 1.0) if numeric > 20 else min(max(numeric / 10, 0.1), 1.0)
+                return f"background-color: rgba(91, 21, 159, {0.18 + 0.42 * intensity}); color: #111827; font-weight: 700; text-align: center;"
+        except Exception:
+            pass
+        status = status_map.get(column, "OBS")
+        if status == "FORTE":
+            return "background-color: #009966; color: white; font-weight: 800; text-align: center;"
+        if status == "BOM":
+            return "background-color: #55b7ff; color: #07121f; font-weight: 800; text-align: center;"
+        if status == "FRACO":
+            return "background-color: #e85d75; color: white; font-weight: 800; text-align: center;"
+        return "background-color: #d6b4ec; color: #2b0f3f; font-weight: 800; text-align: center;"
+
+    def apply_styles(data: pd.DataFrame):
+        styles = pd.DataFrame("", index=data.index, columns=data.columns)
+        for row_index in data.index:
+            row_label = str(data.loc[row_index, "Concurso"])
+            for column in data.columns:
+                value = data.loc[row_index, column]
+                if row_label in {"FREQ", "ATRASO", "FORCA"} and column != "Concurso":
+                    styles.loc[row_index, column] = "background-color: #efe3ff; color: #1f1235; font-weight: 800; text-align: center;"
+                else:
+                    styles.loc[row_index, column] = style_cell(value, column)
+        return styles
+
+    return (
+        df.style.apply(apply_styles, axis=None)
+        .set_properties(**{"font-size": "11px", "min-width": "34px", "height": "24px"})
+        .hide(axis="index")
+    )
+
+
+def render_movement_tab(draws: pd.DataFrame) -> None:
+    st.subheader("Movimentacao das dezenas")
+    col1, col2 = st.columns(2)
+    with col1:
+        movement_rows = st.slider("Concursos na tabela", min_value=5, max_value=30, value=12, step=1)
+    with col2:
+        strength_window = st.slider("Janela de forca", min_value=5, max_value=50, value=10, step=1)
+
+    movement, summary = build_movement_report(draws, rows=movement_rows, strength_window=strength_window)
+    status_counts = summary["status"].value_counts().reindex(["FORTE", "BOM", "OBS", "FRACO"], fill_value=0)
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Fortes", int(status_counts["FORTE"]))
+    metric_cols[1].metric("Bons", int(status_counts["BOM"]))
+    metric_cols[2].metric("Observacao", int(status_counts["OBS"]))
+    metric_cols[3].metric("Fracos", int(status_counts["FRACO"]))
+
+    st.dataframe(style_movement_report(movement), use_container_width=True, height=560)
+
+    legend = pd.DataFrame(
+        [
+            {"classe": "FORTE", "leitura": "alta forca combinando frequencia recente, atraso, tendencia e historico"},
+            {"classe": "BOM", "leitura": "boa sustentacao, mas abaixo do grupo mais forte"},
+            {"classe": "OBS", "leitura": "zona intermediaria para compor cobertura"},
+            {"classe": "FRACO", "leitura": "baixa forca no momento pela combinacao matematica atual"},
+            {"classe": "FALTA CICLO", "leitura": "dezena ausente nos ultimos concursos usados como ciclo curto"},
+        ]
+    )
+    st.dataframe(legend, use_container_width=True, hide_index=True)
+    st.markdown("### Ranking da movimentacao")
+    st.dataframe(summary.head(100), use_container_width=True, hide_index=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -352,6 +541,45 @@ def _normalize_game_numbers(selection, limit: int | None = None):
     return normalized[:limit] if limit is not None else normalized
 
 
+def _minmax(series, neutral: float = 0.0):
+    values = pd.to_numeric(series, errors="coerce").fillna(neutral)
+    spread = values.max() - values.min()
+    if abs(float(spread)) < 1e-12:
+        return pd.Series(np.full(len(values), neutral), index=values.index)
+    return (values - values.min()) / (spread + 1e-12)
+
+
+def _apply_learning_blend(df: pd.DataFrame, base_column: str, base_weight: float = 0.64) -> pd.Series:
+    base = pd.to_numeric(df[base_column], errors="coerce").fillna(0.0)
+    if "ai_learning_score" not in df.columns:
+        return base
+
+    learned = pd.to_numeric(df["ai_learning_score"], errors="coerce").fillna(0.0)
+    if learned.abs().sum() <= 1e-12:
+        return base
+
+    confidence = pd.to_numeric(df.get("ai_learning_confidence", 0.0), errors="coerce").fillna(0.0).clip(0.0, 1.0)
+    learned_norm = _minmax(learned, neutral=0.5)
+    signed_boost = np.tanh(learned * 3.0)
+    confidence_weight = float(confidence.mean()) if len(confidence) else 0.0
+    learning_weight = min(0.42, max(0.18, 1.0 - base_weight) + (0.18 * confidence_weight))
+    blended = ((1.0 - learning_weight) * base) + (learning_weight * learned_norm)
+    return blended + (0.06 * confidence * signed_boost)
+
+
+def _learning_anchor_numbers(features, max_count: int = 20) -> list[str]:
+    if features is None or "ai_learning_score" not in features.columns:
+        return []
+    df = features.copy()
+    df["number"] = df["number"].astype(str).str.zfill(2)
+    df["ai_learning_score"] = pd.to_numeric(df["ai_learning_score"], errors="coerce").fillna(0.0)
+    df["ai_learning_confidence"] = pd.to_numeric(df.get("ai_learning_confidence", 0.0), errors="coerce").fillna(0.0)
+    anchors = df[(df["ai_learning_score"] > 0) & (df["ai_learning_confidence"] >= 0.65)]
+    if anchors.empty:
+        return []
+    return anchors.sort_values(["ai_learning_score", "ai_learning_confidence"], ascending=False)["number"].head(max_count).tolist()
+
+
 def _rank_numbers_for_generation(features, method: str, variation: int = 0, ensemble_report=None):
     df = features.copy()
     df["number"] = df["number"].astype(str).str.zfill(2)
@@ -359,14 +587,16 @@ def _rank_numbers_for_generation(features, method: str, variation: int = 0, ense
     rng = np.random.default_rng(42 + int(variation))
 
     score = pd.to_numeric(df.get("score_total", 0), errors="coerce").fillna(0.0)
-    score_norm = (score - score.min()) / (score.max() - score.min() + 1e-12)
-    df["_score_norm"] = score_norm
+    df["_score_norm"] = _minmax(score)
+    df["_score_norm"] = _apply_learning_blend(df, "_score_norm", base_weight=0.66)
 
     if ensemble_report is not None and "prob_final" in ensemble_report.columns:
         probs = ensemble_report.copy()
         probs["number"] = probs["number"].astype(str).str.zfill(2)
         df = df.merge(probs[["number", "prob_final"]], on="number", how="left")
         df["_generation_score"] = pd.to_numeric(df["prob_final"], errors="coerce").fillna(df["_score_norm"])
+        df["_generation_score"] = _minmax(df["_generation_score"])
+        df["_generation_score"] = _apply_learning_blend(df, "_generation_score", base_weight=0.68)
         return df.sort_values("_generation_score", ascending=False)["number"].tolist()
 
     if method == "random":
@@ -375,18 +605,18 @@ def _rank_numbers_for_generation(features, method: str, variation: int = 0, ense
     if method == "post_result":
         last_draw = pd.to_numeric(df.get("last_draw_hit", 0), errors="coerce").fillna(0.0)
         recent_5 = pd.to_numeric(df.get("last_5_draws_hits", 0), errors="coerce").fillna(0.0)
-        recent_5_norm = (recent_5 - recent_5.min()) / (recent_5.max() - recent_5.min() + 1e-12)
+        recent_5_norm = _minmax(recent_5)
         delay = pd.to_numeric(df.get("delay_last", 0), errors="coerce").fillna(0.0)
-        delay_norm = (delay - delay.min()) / (delay.max() - delay.min() + 1e-12)
+        delay_norm = _minmax(delay)
         df["_generation_score"] = (df["_score_norm"] * 0.60) + (last_draw * 0.18) + (recent_5_norm * 0.14) + ((1 - delay_norm) * 0.08)
     elif method == "balanced":
         freq = pd.to_numeric(df.get("freq_global", 0), errors="coerce").fillna(0.0)
-        freq_norm = (freq - freq.min()) / (freq.max() - freq.min() + 1e-12)
+        freq_norm = _minmax(freq)
         parity_balance = np.where(df["number_int"] % 2 == 0, 0.5, 0.55)
         df["_generation_score"] = (df["_score_norm"] * 0.72) + ((1 - abs(freq_norm - 0.5)) * 0.18) + (parity_balance * 0.10)
     elif method == "coverage":
         delay = pd.to_numeric(df.get("delay_last", 0), errors="coerce").fillna(0.0)
-        delay_norm = (delay - delay.min()) / (delay.max() - delay.min() + 1e-12)
+        delay_norm = _minmax(delay)
         df["_generation_score"] = (df["_score_norm"] * 0.55) + (delay_norm * 0.35) + rng.normal(0, 0.03, len(df))
     else:
         df["_generation_score"] = df["_score_norm"] + rng.normal(0, 0.04, len(df))
@@ -447,6 +677,11 @@ def generate_game(features, selection, method: str, game_size: int = 50, variati
     - Ensures we never request more random choices than available.
     """
     selected = _normalize_game_numbers(selection, limit=game_size)
+    for anchor in _learning_anchor_numbers(features, max_count=min(16, game_size)):
+        if len(selected) >= game_size:
+            break
+        if anchor not in selected:
+            selected.append(anchor)
 
     needed = max(0, game_size - len(selected))
     remaining = [
@@ -528,6 +763,11 @@ def generate_power_portfolio(
 ):
     """Generate strong 50-number games while spreading risk across the portfolio."""
     fixed = _normalize_game_numbers(selection, limit=game_size)
+    for anchor in _learning_anchor_numbers(features, max_count=min(16, game_size)):
+        if len(fixed) >= game_size:
+            break
+        if anchor not in fixed:
+            fixed.append(anchor)
     n_games = max(1, int(n_games))
     universe_size = max(game_size, min(100, int(universe_size)))
     ranked = _rank_numbers_for_generation(features, method, variation, ensemble_report=ensemble_report)
@@ -618,6 +858,11 @@ def generate_covering_games(
 ):
     """Build a fechamento: several 50-number games from a larger ranked universe."""
     fixed = _normalize_game_numbers(selection, limit=game_size)
+    for anchor in _learning_anchor_numbers(features, max_count=min(16, game_size)):
+        if len(fixed) >= game_size:
+            break
+        if anchor not in fixed:
+            fixed.append(anchor)
     universe_size = max(game_size, min(100, int(universe_size)))
     ranked = _rank_numbers_for_generation(features, method, variation)
     pool = list(dict.fromkeys(fixed + [n for n in ranked if n not in fixed]))[:universe_size]
@@ -720,7 +965,7 @@ def run_dashboard() -> None:
     run_montecarlo = st.sidebar.button("Executar Monte Carlo")
     run_model = st.sidebar.button("Treinar Modelos")
     run_model_fast = st.sidebar.button("Treinar modelos rápido")
-    num_games = st.sidebar.slider("Número de jogos a gerar", min_value=1, max_value=100, value=8, step=1)
+    num_games = st.sidebar.slider("Número de jogos a gerar", min_value=1, max_value=100, value=1, step=1)
     run_backtest = st.sidebar.button("Executar Backtest")
     run_genetic = st.sidebar.button("Executar Genetic Search")
     run_correlation = st.sidebar.button("Calcular Correlações")
@@ -785,6 +1030,9 @@ def run_dashboard() -> None:
     ml_report = st.session_state.get("ml_report")
     ensemble_report = st.session_state.get("ensemble_report")
     backtest_report = st.session_state.get("backtest_report")
+    learning_records = load_learning_records()
+    if features is not None:
+        features = apply_learning_to_features(features, learning_records)
 
     if run_features and features is None:
         if not st.session_state["features_background_running"]:
@@ -796,7 +1044,7 @@ def run_dashboard() -> None:
 
     if run_correlation and correlation is None:
         correlation = ensure_correlation(draws)
-        st.success("Correlação calculada e armazenada em cache.")
+        st.success("CorrelaÃ§Ã£o calculada e armazenada em cache.")
 
     if run_model:
         if features is None:
@@ -883,7 +1131,19 @@ def run_dashboard() -> None:
         )
         st.success("Dados exportados para SQLite em database/")
 
-    tabs = st.tabs(["Resumo", "Ranking", "Previsões", "Modelos", "Gerador", "Monte Carlo", "Backtest", "Genético", "Correlações"])
+    tabs = st.tabs([
+        "Resumo",
+        "Ranking",
+        "Movimentacao",
+        "Previsões",
+        "Modelos",
+        "Gerador",
+        "IA Aprendizado",
+        "Monte Carlo",
+        "Backtest",
+        "Genético",
+        "Correlações",
+    ])
 
     with tabs[0]:
         st.subheader("Resumo histórico")
@@ -921,7 +1181,7 @@ def run_dashboard() -> None:
 
             refresh_ranking = st.button("Atualizar agora", key="refresh_ranking")
             if refresh_ranking:
-                logger.info("Botão 'Atualizar agora' (ranking) pressionado pelo usuário")
+                logger.info("BotÃ£o 'Atualizar agora' (ranking) pressionado pelo usuário")
                 signature = _get_cache_signature(draws)
                 # try to load features and dependencies from disk cache first
                 f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
@@ -948,15 +1208,18 @@ def run_dashboard() -> None:
             render_table("Ranking de maior potencial", features.sort_values("score_total", ascending=False), max_rows=50)
 
     with tabs[2]:
+        render_movement_tab(draws)
+
+    with tabs[3]:
         st.subheader("Previsões de números")
         st.write("Os números abaixo são ordenados pela probabilidade final da pilha de modelos.")
         if ensemble_report is None:
-            st.info("Clique em 'Treinar modelos' no painel lateral para calcular as previsões.")
+            st.info("Clique em 'Treinar modelos' no painel lateral para calcular as previsÃµes.")
         else:
             display_cols = [c for c in ("number", "prob_final", "prob_ensemble", "prob_weighted", "prob_mean") if c in ensemble_report.columns]
             render_table("Top 50 para o próximo concurso", ensemble_report[display_cols], max_rows=50)
 
-    with tabs[3]:
+    with tabs[4]:
         st.subheader("Avaliação de Modelos")
         if ensemble_report is None:
             st.info("Treine os modelos para ver a comparação entre eles.")
@@ -980,21 +1243,24 @@ def run_dashboard() -> None:
                 st.markdown("**Principais features do modelo**")
                 st.dataframe(ml_engine.feature_importances_.head(50).rename("importance").to_frame())
 
-    with tabs[4]:
+    with tabs[5]:
         st.subheader("Gerador de Jogos")
 
-        # Use new visual game selector panel
-        game_config = render_game_selector_panel()
-        selected_numbers = game_config.get("numbers", [])
         generation_features = features if features is not None else build_fast_generation_features(draws, statistics)
+        generation_features = apply_learning_to_features(generation_features, learning_records)
         generation_ensemble = ensemble_report if features is not None else None
         using_fast_generator = features is None
+        _, generator_movement_summary = build_movement_report(draws, rows=10, strength_window=10)
+        generator_status_map = generator_movement_summary.set_index("dezena")["status"].to_dict()
+
+        game_config = render_game_selector_panel(status_map=generator_status_map)
+        selected_numbers = game_config.get("numbers", [])
 
         st.divider()
 
-        # Generation options
         col1, col2 = st.columns(2)
         with col1:
+            st.markdown("#### Configuracao da geracao")
             generate_method = st.radio(
                 "Método de cada jogo",
                 ["post_result", "top_score", "balanced", "coverage", "random"],
@@ -1014,10 +1280,18 @@ def run_dashboard() -> None:
             closure_games = st.slider("Jogos no fechamento", min_value=2, max_value=30, value=max(4, min(10, num_games)), step=1)
             use_power_portfolio = st.checkbox("Otimizar carteira de jogos", value=True)
             power_floor = st.slider("Potência mínima", min_value=0.60, max_value=0.95, value=0.78, step=0.01)
-            st.caption("No fechamento, o sistema escolhe um universo maior e distribui esses números em jogos de 50 para aumentar a cobertura.")
+            st.caption("O fechamento escolhe um universo maior e distribui os numeros em jogos de 50.")
 
         with col2:
-            st.markdown("### Geração")
+            st.markdown("#### Acoes")
+            generation_count = st.number_input(
+                "Quantidade de jogos",
+                min_value=1,
+                max_value=100,
+                value=int(num_games),
+                step=1,
+                key="generation_count",
+            )
             if using_fast_generator:
                 if not st.session_state.get("features_background_running"):
                     st.session_state["features_background_running"] = True
@@ -1026,16 +1300,17 @@ def run_dashboard() -> None:
             else:
                 st.success("Modo avançado ativo.")
 
-            if st.button(f"Gerador automático: {num_games} jogos", key="button_generate_auto", use_container_width=True):
+            if st.button(f"Gerador automático: {generation_count} jogo(s)", key="button_generate_auto", use_container_width=True):
                 fixed_numbers = game_config.get("fixed", [])
                 base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
                 st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
+                st.session_state.last_generation_method = generate_method
                 variation = st.session_state.generation_variation
                 generated_games = generate_power_portfolio(
                     generation_features,
                     base_selection,
                     generate_method,
-                    n_games=num_games,
+                    n_games=generation_count,
                     universe_size=closure_universe,
                     game_size=50,
                     variation=variation,
@@ -1052,6 +1327,7 @@ def run_dashboard() -> None:
                 fixed_numbers = game_config.get("fixed", [])
                 base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
                 st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
+                st.session_state.last_generation_method = generate_method
                 variation = st.session_state.generation_variation
                 generated_game = generate_game(
                     generation_features,
@@ -1076,7 +1352,7 @@ def run_dashboard() -> None:
 
                 refresh_generator_tab = st.button("Atualizar agora", key="refresh_generator_tab")
                 if refresh_generator_tab:
-                    logger.info("Botão 'Atualizar agora' (gerador) pressionado pelo usuário")
+                    logger.info("BotÃ£o 'Atualizar agora' (gerador) pressionado pelo usuário")
                     signature = _get_cache_signature(draws)
                     f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
                     gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
@@ -1102,57 +1378,30 @@ def run_dashboard() -> None:
                     fixed_numbers = game_config.get("fixed", [])
                     base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
                     st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
+                    st.session_state.last_generation_method = generate_method
                     variation = st.session_state.generation_variation
                     
-                    if use_power_portfolio:
-                        generated_games = generate_power_portfolio(
-                            features,
-                            base_selection,
-                            generate_method,
-                            n_games=num_games,
-                            universe_size=closure_universe,
-                            game_size=50,
-                            variation=variation,
-                            ensemble_report=ensemble_report,
-                            min_power=power_floor,
-                        )
-                        append_generated_games(generated_games)
-                        covered = len(set().union(*[set(game) for game in generated_games])) if generated_games else 0
-                        st.success(f"✓ Carteira otimizada: {len(generated_games)} jogos de 50 cobrindo {covered} números")
-                    elif use_closure:
-                        generated_games = generate_covering_games(
-                            features,
-                            base_selection,
-                            generate_method,
-                            n_games=closure_games,
-                            universe_size=closure_universe,
-                            game_size=50,
-                            variation=variation,
-                        )
-                        append_generated_games(generated_games)
-                        covered = len(set().union(*[set(game) for game in generated_games])) if generated_games else 0
-                        st.success(f"✓ Fechamento gerado: {len(generated_games)} jogos de 50 cobrindo {covered} números")
-                    else:
-                        generated_game = generate_game(
-                            features,
-                            base_selection,
-                            generate_method,
-                            game_size=50,
-                            variation=variation,
-                            ensemble_report=ensemble_report,
-                        )
-                        append_generated_games([generated_game])
-                        st.success(f"✓ Jogo gerado com {len(generated_game)} números")
+                    generated_game = generate_game(
+                        features,
+                        base_selection,
+                        generate_method,
+                        game_size=50,
+                        variation=variation,
+                        ensemble_report=ensemble_report,
+                    )
+                    append_generated_games([generated_game])
+                    st.success(f"✓ Jogo gerado com {len(generated_game)} números")
                     
                     # Clear selection unless numbers are fixed
                     if len(fixed_numbers) == 0:
                         st.session_state.ui_selected_numbers = set()
 
-                if st.button(f"Gerar {num_games} Jogos", key="button_generate_games", use_container_width=True):
+                if st.button(f"Gerar {generation_count} Jogo(s)", key="button_generate_games", use_container_width=True):
                     # Get fixed numbers from game_config
                     fixed_numbers = game_config.get("fixed", [])
                     base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
                     st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
+                    st.session_state.last_generation_method = generate_method
                     variation = st.session_state.generation_variation
                     
                     if use_closure:
@@ -1160,7 +1409,7 @@ def run_dashboard() -> None:
                             features,
                             base_selection,
                             generate_method,
-                            n_games=closure_games,
+                            n_games=generation_count,
                             universe_size=closure_universe,
                             game_size=50,
                             variation=variation,
@@ -1172,7 +1421,7 @@ def run_dashboard() -> None:
                             features,
                             base_selection,
                             generate_method,
-                            n_games=num_games,
+                            n_games=generation_count,
                             game_size=50,
                             variation=variation,
                             ensemble_report=ensemble_report,
@@ -1191,6 +1440,7 @@ def run_dashboard() -> None:
                     fixed_numbers = game_config.get("fixed", [])
                     base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
                     st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
+                    st.session_state.last_generation_method = "top_score"
                     variation = st.session_state.generation_variation
                     
                     if use_closure:
@@ -1227,6 +1477,11 @@ def run_dashboard() -> None:
         # Display generated games
         generated_games = st.session_state.get("generated_games")
         if generated_games is not None:
+            if st.button("Limpar jogos gerados", key="button_clear_generated_games"):
+                st.session_state.generated_games = []
+                st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+
+        if generated_games:
             portfolio_stats = estimate_portfolio_prize_chances(generated_games)
             st.markdown("### Matemática da carteira")
             stat_cols = st.columns(6)
@@ -1251,7 +1506,76 @@ def run_dashboard() -> None:
             st.dataframe(pd.DataFrame(odds_rows), use_container_width=True, hide_index=True)
             render_generated_games_gallery(generated_games)
 
-    with tabs[5]:
+    with tabs[6]:
+        st.subheader("IA Aprendizado")
+
+        default_draw_text = "-".join(DEFAULT_EVAL_DRAW)
+        actual_draw_text = st.text_input(
+            "Resultado real para avaliar",
+            value=default_draw_text,
+            key="ai_actual_draw_text",
+        )
+        actual_draw = normalize_numbers(actual_draw_text, limit=20)
+        st.caption(f"Resultado usado: {'-'.join(actual_draw)}")
+
+        generated_games = st.session_state.get("generated_games") or []
+        if not generated_games:
+            st.info("Gere jogos na aba Gerador para avaliar acertos, erros e alimentar o aprendizado.")
+        elif len(actual_draw) != 20:
+            st.warning("Informe exatamente 20 números do resultado real.")
+        else:
+            evaluation_df = evaluate_games_against_draw(generated_games, actual_draw)
+            best_hits = int(evaluation_df["acertos"].max()) if not evaluation_df.empty else 0
+            avg_hits = float(evaluation_df["acertos"].mean()) if not evaluation_df.empty else 0.0
+            expected_hits = 50 * 20 / 100
+            denominator = math.comb(100, 20)
+            chance_best_or_more = sum(
+                math.comb(50, hits) * math.comb(50, 20 - hits)
+                for hits in range(best_hits, 21)
+            ) / denominator
+
+            result_cols = st.columns(5)
+            result_cols[0].metric("Jogos avaliados", len(generated_games))
+            result_cols[1].metric("Melhor acerto", best_hits)
+            result_cols[2].metric("Média de acertos", round(avg_hits, 2))
+            result_cols[3].metric("Base matemática esperada", round(expected_hits, 2))
+            result_cols[4].metric("Chance ≥ melhor", f"{chance_best_or_more * 100:.2f}%")
+
+            if best_hits >= expected_hits:
+                st.success(f"Melhor jogo ficou {round(best_hits - expected_hits, 2)} ponto(s) acima da base esperada.")
+            else:
+                st.warning(f"Melhor jogo ficou {round(expected_hits - best_hits, 2)} ponto(s) abaixo da base esperada.")
+
+            st.dataframe(evaluation_df, use_container_width=True, hide_index=True)
+
+            if st.button("Salvar avaliação e treinar IA", key="button_save_ai_feedback", use_container_width=True):
+                learning_records = record_learning_feedback(
+                    generated_games,
+                    actual_draw,
+                    draw_date="2026-06-03",
+                    method=st.session_state.get("last_generation_method", "manual"),
+                )
+                st.success(f"Aprendizado salvo com {len(learning_records)} registro(s). Os próximos jogos já usam esse ajuste.")
+                st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+
+        learning_records = load_learning_records()
+        if learning_records:
+            profile = build_learning_profile(learning_records)
+            profile_cols = [
+                "number",
+                "ai_learning_score",
+                "vezes_escolhido",
+                "acertos_quando_escolhido",
+                "erros_quando_escolhido",
+                "sorteado_fora_do_jogo",
+            ]
+            st.markdown("### Memória aprendida")
+            st.write(f"Registros salvos: {len(learning_records)}")
+            st.dataframe(profile[profile_cols].head(25), use_container_width=True, hide_index=True)
+        else:
+            st.info("A memória da IA ainda está vazia. Salve uma avaliação para começar.")
+
+    with tabs[7]:
         st.subheader("Simulação Monte Carlo")
         if run_montecarlo:
             with st.spinner("Executando Monte Carlo..."):
@@ -1265,9 +1589,9 @@ def run_dashboard() -> None:
             render_chart(probabilities.head(50), "number", "probability", "Top 50 probabilidades em Monte Carlo")
             render_table("Top 50 números por probabilidade de Monte Carlo", probabilities.head(50), max_rows=50)
 
-    with tabs[6]:
+    with tabs[8]:
         st.subheader("Resultados do Backtest")
-        st.write("Validação walk-forward com previsão por frequência histórica.")
+        st.write("Validação walk-forward com previsão por frequência histÃ³rica.")
         if run_backtest:
             if features is None:
                 features = ensure_features(draws)
@@ -1284,8 +1608,8 @@ def run_dashboard() -> None:
             render_chart(backtest_report, "split", "precision", "Precisão por split")
             render_chart(backtest_report, "split", "roi_theoretical", "ROI teórico por split")
 
-    with tabs[7]:
-        st.subheader("Otimização Genética")
+    with tabs[9]:
+        st.subheader("Otimização GenÃ©tica")
         st.markdown(f"**Critério selecionado:** {fitness_criteria}")
         st.markdown(f"**População:** {population_size} | **Gerações:** {generations}")
         if run_genetic:
@@ -1297,7 +1621,7 @@ def run_dashboard() -> None:
                     st.info("Preparação de features iniciada em background. Clique em 'Executar Genetic Search' novamente quando pronto ou use 'Atualizar agora'.")
                     refresh_genetic_start = st.button("Atualizar agora", key="refresh_genetic_start")
                     if refresh_genetic_start:
-                        logger.info("Botão 'Atualizar agora' (genetic start) pressionado pelo usuário")
+                        logger.info("BotÃ£o 'Atualizar agora' (genetic start) pressionado pelo usuário")
                         signature = _get_cache_signature(draws)
                         f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
                         gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
@@ -1321,7 +1645,7 @@ def run_dashboard() -> None:
                     st.info("Preparação de features rodando em background...")
                     refresh_genetic_running = st.button("Atualizar agora", key="refresh_genetic_running")
                     if refresh_genetic_running:
-                        logger.info("Botão 'Atualizar agora' (genetic running) pressionado pelo usuário")
+                        logger.info("BotÃ£o 'Atualizar agora' (genetic running) pressionado pelo usuário")
                         signature = _get_cache_signature(draws)
                         f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
                         gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
@@ -1364,7 +1688,7 @@ def run_dashboard() -> None:
         else:
             st.info("Clique no botão na barra lateral para gerar combinações genéticas usando o critério selecionado.")
 
-    with tabs[8]:
+    with tabs[10]:
         st.subheader("Correlações e padrões")
         st.write("Matriz de lift e pares de números mais correlacionados.")
         if correlation is None:
