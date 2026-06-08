@@ -193,7 +193,7 @@ def build_movement_report(draws: pd.DataFrame, rows: int = 12, strength_window: 
     movement_rows.append({"Concurso": "ATRASO"} | {number: int(delay_series[number]) for number in numbers})
     movement_rows.append({"Concurso": "FORCA"} | {number: int(round(score[number] * 100)) for number in numbers})
     movement_rows.append({"Concurso": "FALTA CICLO"} | {number: ("*" if number in missing_cycle else "") for number in numbers})
-    movement = pd.DataFrame(movement_rows)
+    movement = pd.DataFrame(movement_rows).astype(str)
     movement.attrs["score_map"] = score.to_dict()
     movement.attrs["status_map"] = summary.set_index("dezena")["status"].to_dict()
     return movement, summary
@@ -203,7 +203,7 @@ def style_movement_report(df: pd.DataFrame):
     score_map = df.attrs.get("score_map", {})
     status_map = df.attrs.get("status_map", {})
 
-    def style_cell(value, column):
+    def style_cell(value, column, row_label: str):
         if column == "Concurso":
             return "background-color: #5b159f; color: white; font-weight: 700; text-align: center;"
         if value == "":
@@ -219,7 +219,7 @@ def style_movement_report(df: pd.DataFrame):
             return "background-color: #fff0b3; color: #805800; font-weight: 800; text-align: center;"
         try:
             numeric = float(value)
-            if df.loc[df.index[df.eq(value).any(axis=1)][0], "Concurso"] in {"FREQ", "ATRASO", "FORCA"}:
+            if row_label in {"FREQ", "ATRASO", "FORCA"}:
                 intensity = min(max(numeric / 100, 0.15), 1.0) if numeric > 20 else min(max(numeric / 10, 0.1), 1.0)
                 return f"background-color: rgba(91, 21, 159, {0.18 + 0.42 * intensity}); color: #111827; font-weight: 700; text-align: center;"
         except Exception:
@@ -242,7 +242,7 @@ def style_movement_report(df: pd.DataFrame):
                 if row_label in {"FREQ", "ATRASO", "FORCA"} and column != "Concurso":
                     styles.loc[row_index, column] = "background-color: #efe3ff; color: #1f1235; font-weight: 800; text-align: center;"
                 else:
-                    styles.loc[row_index, column] = style_cell(value, column)
+                    styles.loc[row_index, column] = style_cell(value, column, row_label)
         return styles
 
     return (
@@ -1171,37 +1171,12 @@ def run_dashboard() -> None:
     with tabs[1]:
         st.subheader("Ranking de Números e Score Total")
         if features is None:
-            # start background prepare on-demand when the user opens this tab
-            if not st.session_state.get("features_background_running"):
-                st.session_state["features_background_running"] = True
-                threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
-                st.info("Preparação de features iniciada em background. Use 'Atualizar agora' para ver quando terminar.")
-            else:
-                st.info("Preparação de features rodando em background...")
-
-            refresh_ranking = st.button("Atualizar agora", key="refresh_ranking")
-            if refresh_ranking:
-                logger.info("BotÃ£o 'Atualizar agora' (ranking) pressionado pelo usuário")
-                signature = _get_cache_signature(draws)
-                # try to load features and dependencies from disk cache first
-                f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
-                gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
-                mr = _load_from_disk_cache(MARKOV_CACHE_FILE, signature)
-                hm = _load_from_disk_cache(HMM_CACHE_FILE, signature)
-                if f is not None:
-                    st.session_state.features = f
-                    if gm is not None:
-                        st.session_state.graph_metrics = gm
-                    if mr is not None:
-                        st.session_state.markov_report = mr
-                    if hm is not None:
-                        st.session_state.hmm_report = hm
-                    logger.info("Loaded features from disk cache via 'Atualizar agora'")
-                    st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
-                else:
-                    features = ensure_features(draws)
-                    if features is not None:
-                        st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+            quick_features = build_fast_generation_features(draws, statistics)
+            quick_features = apply_learning_to_features(quick_features, learning_records)
+            st.info("Modo rapido ativo. Use 'Preparar features avancadas' na lateral apenas quando quiser calcular metricas pesadas.")
+            render_chart(quick_features.sort_values("score_total", ascending=False).head(50), "number", "score_total", "Top 50 score_total rapido")
+            st.markdown("**Top 50 por score_total rapido**")
+            render_table("Ranking rapido de maior potencial", quick_features.sort_values("score_total", ascending=False), max_rows=50)
         else:
             render_chart(features.sort_values("score_total", ascending=False).head(50), "number", "score_total", "Top 50 score_total")
             st.markdown("**Top 50 por score_total**")
@@ -1293,10 +1268,7 @@ def run_dashboard() -> None:
                 key="generation_count",
             )
             if using_fast_generator:
-                if not st.session_state.get("features_background_running"):
-                    st.session_state["features_background_running"] = True
-                    threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
-                st.info("Modo rápido ativo: você já pode gerar jogos. As métricas avançadas seguem carregando em segundo plano.")
+                st.info("Modo rapido ativo: voce ja pode gerar jogos sem aguardar as metricas avancadas.")
             else:
                 st.success("Modo avançado ativo.")
 
@@ -1343,35 +1315,7 @@ def run_dashboard() -> None:
                     st.session_state.ui_selected_numbers = set()
             
             if features is None:
-                if not st.session_state.get("features_background_running"):
-                    st.session_state["features_background_running"] = True
-                    threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
-                    st.info("Preparação de features iniciada em background.")
-                else:
-                    st.info("Preparação de features rodando...")
-
-                refresh_generator_tab = st.button("Atualizar agora", key="refresh_generator_tab")
-                if refresh_generator_tab:
-                    logger.info("BotÃ£o 'Atualizar agora' (gerador) pressionado pelo usuário")
-                    signature = _get_cache_signature(draws)
-                    f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
-                    gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
-                    mr = _load_from_disk_cache(MARKOV_CACHE_FILE, signature)
-                    hm = _load_from_disk_cache(HMM_CACHE_FILE, signature)
-                    if f is not None:
-                        st.session_state.features = f
-                        if gm is not None:
-                            st.session_state.graph_metrics = gm
-                        if mr is not None:
-                            st.session_state.markov_report = mr
-                        if hm is not None:
-                            st.session_state.hmm_report = hm
-                        logger.info("Loaded features from disk cache via 'Atualizar agora' (gerador)")
-                        st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
-                    else:
-                        features = ensure_features(draws)
-                        if features is not None:
-                            st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+                st.info("Modo rapido ativo na nuvem. Os botoes acima ja podem gerar jogos; metricas avancadas ficam sob demanda pela barra lateral.")
             else:
                 if st.button("Gerar 1 Jogo", key="button_generate_game", use_container_width=True):
                     # Get fixed numbers from game_config
