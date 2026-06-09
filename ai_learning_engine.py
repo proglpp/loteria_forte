@@ -201,7 +201,7 @@ def build_learning_profile(records: list[dict]) -> pd.DataFrame:
         0.58 * hit_lift
         + 0.34 * df["pressao_de_resgate"]
         + 0.28 * coverage_gap
-        + 0.22 * recent_draw_boost
+        + 0.10 * recent_draw_boost
         - 0.30 * false_positive_pressure
         - 0.14 * overexposure
     ) * (0.55 + 0.45 * df["ai_learning_confidence"])
