@@ -268,7 +268,7 @@ def render_movement_tab(draws: pd.DataFrame) -> None:
     metric_cols[2].metric("Observacao", int(status_counts["OBS"]))
     metric_cols[3].metric("Fracos", int(status_counts["FRACO"]))
 
-    st.dataframe(style_movement_report(movement), use_container_width=True, height=560)
+    st.dataframe(style_movement_report(movement), width="stretch", height=560)
 
     legend = pd.DataFrame(
         [
@@ -279,9 +279,9 @@ def render_movement_tab(draws: pd.DataFrame) -> None:
             {"classe": "FALTA CICLO", "leitura": "dezena ausente nos ultimos concursos usados como ciclo curto"},
         ]
     )
-    st.dataframe(legend, use_container_width=True, hide_index=True)
+    st.dataframe(legend, width="stretch", hide_index=True)
     st.markdown("### Ranking da movimentacao")
-    st.dataframe(summary.head(100), use_container_width=True, hide_index=True)
+    st.dataframe(summary.head(100), width="stretch", hide_index=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -1035,16 +1035,13 @@ def run_dashboard() -> None:
         features = apply_learning_to_features(features, learning_records)
 
     if run_features and features is None:
-        if not st.session_state["features_background_running"]:
-            st.session_state["features_background_running"] = True
-            threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
-            st.success("Preparação de features em background iniciada. Use Atualizar agora para ver o resultado quando estiver pronto.")
-        else:
-            st.info("A preparação de features já está rodando em background.")
+        with st.spinner("Preparando features avancadas..."):
+            features = ensure_features(draws)
+        st.success("Features avancadas preparadas.")
 
     if run_correlation and correlation is None:
         correlation = ensure_correlation(draws)
-        st.success("CorrelaÃ§Ã£o calculada e armazenada em cache.")
+        st.success("Correlacao calculada e armazenada em cache.")
 
     if run_model:
         if features is None:
@@ -1189,7 +1186,7 @@ def run_dashboard() -> None:
         st.subheader("Previsões de números")
         st.write("Os números abaixo são ordenados pela probabilidade final da pilha de modelos.")
         if ensemble_report is None:
-            st.info("Clique em 'Treinar modelos' no painel lateral para calcular as previsÃµes.")
+            st.info("Clique em 'Treinar modelos' no painel lateral para calcular as previsoes.")
         else:
             display_cols = [c for c in ("number", "prob_final", "prob_ensemble", "prob_weighted", "prob_mean") if c in ensemble_report.columns]
             render_table("Top 50 para o próximo concurso", ensemble_report[display_cols], max_rows=50)
@@ -1272,7 +1269,7 @@ def run_dashboard() -> None:
             else:
                 st.success("Modo avançado ativo.")
 
-            if st.button(f"Gerador automático: {generation_count} jogo(s)", key="button_generate_auto", use_container_width=True):
+            if st.button(f"Gerador automático: {generation_count} jogo(s)", key="button_generate_auto", width="stretch"):
                 fixed_numbers = game_config.get("fixed", [])
                 base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
                 st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
@@ -1295,7 +1292,7 @@ def run_dashboard() -> None:
                 if len(fixed_numbers) == 0:
                     st.session_state.ui_selected_numbers = set()
 
-            if st.button("Autocompletar 1 jogo", key="button_autocomplete_game", use_container_width=True):
+            if st.button("Autocompletar 1 jogo", key="button_autocomplete_game", width="stretch"):
                 fixed_numbers = game_config.get("fixed", [])
                 base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
                 st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
@@ -1317,7 +1314,7 @@ def run_dashboard() -> None:
             if features is None:
                 st.info("Modo rapido ativo na nuvem. Os botoes acima ja podem gerar jogos; metricas avancadas ficam sob demanda pela barra lateral.")
             else:
-                if st.button("Gerar 1 Jogo", key="button_generate_game", use_container_width=True):
+                if st.button("Gerar 1 Jogo", key="button_generate_game", width="stretch"):
                     # Get fixed numbers from game_config
                     fixed_numbers = game_config.get("fixed", [])
                     base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
@@ -1340,7 +1337,7 @@ def run_dashboard() -> None:
                     if len(fixed_numbers) == 0:
                         st.session_state.ui_selected_numbers = set()
 
-                if st.button(f"Gerar {generation_count} Jogo(s)", key="button_generate_games", use_container_width=True):
+                if st.button(f"Gerar {generation_count} Jogo(s)", key="button_generate_games", width="stretch"):
                     # Get fixed numbers from game_config
                     fixed_numbers = game_config.get("fixed", [])
                     base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
@@ -1379,7 +1376,7 @@ def run_dashboard() -> None:
                     if len(fixed_numbers) == 0:
                         st.session_state.ui_selected_numbers = set()
 
-                if st.button("Completar com Pontuação", key="button_complete_top_score", use_container_width=True):
+                if st.button("Completar com Pontuação", key="button_complete_top_score", width="stretch"):
                     # Get fixed numbers from game_config
                     fixed_numbers = game_config.get("fixed", [])
                     base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
@@ -1447,7 +1444,7 @@ def run_dashboard() -> None:
                         "multiplicador": portfolio_prob / single_prob if single_prob > 0 else 0,
                     }
                 )
-            st.dataframe(pd.DataFrame(odds_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(odds_rows), width="stretch", hide_index=True)
             render_generated_games_gallery(generated_games)
 
     with tabs[6]:
@@ -1490,9 +1487,9 @@ def run_dashboard() -> None:
             else:
                 st.warning(f"Melhor jogo ficou {round(expected_hits - best_hits, 2)} ponto(s) abaixo da base esperada.")
 
-            st.dataframe(evaluation_df, use_container_width=True, hide_index=True)
+            st.dataframe(evaluation_df, width="stretch", hide_index=True)
 
-            if st.button("Salvar avaliação e treinar IA", key="button_save_ai_feedback", use_container_width=True):
+            if st.button("Salvar avaliação e treinar IA", key="button_save_ai_feedback", width="stretch"):
                 learning_records = record_learning_feedback(
                     generated_games,
                     actual_draw,
@@ -1515,7 +1512,7 @@ def run_dashboard() -> None:
             ]
             st.markdown("### Memória aprendida")
             st.write(f"Registros salvos: {len(learning_records)}")
-            st.dataframe(profile[profile_cols].head(25), use_container_width=True, hide_index=True)
+            st.dataframe(profile[profile_cols].head(25), width="stretch", hide_index=True)
         else:
             st.info("A memória da IA ainda está vazia. Salve uma avaliação para começar.")
 
@@ -1535,7 +1532,7 @@ def run_dashboard() -> None:
 
     with tabs[8]:
         st.subheader("Resultados do Backtest")
-        st.write("Validação walk-forward com previsão por frequência histÃ³rica.")
+        st.write("Validacao walk-forward com previsao por frequencia historica.")
         if run_backtest:
             if features is None:
                 features = ensure_features(draws)
@@ -1553,85 +1550,34 @@ def run_dashboard() -> None:
             render_chart(backtest_report, "split", "roi_theoretical", "ROI teórico por split")
 
     with tabs[9]:
-        st.subheader("Otimização GenÃ©tica")
-        st.markdown(f"**Critério selecionado:** {fitness_criteria}")
-        st.markdown(f"**População:** {population_size} | **Gerações:** {generations}")
+        st.subheader("Otimizacao Genetica")
+        st.markdown(f"**Criterio selecionado:** {fitness_criteria}")
+        st.markdown(f"**Populacao:** {population_size} | **Geracoes:** {generations}")
         if run_genetic:
-            if features is None:
-                # trigger background prepare if not running
-                if not st.session_state.get("features_background_running"):
-                    st.session_state["features_background_running"] = True
-                    threading.Thread(target=_background_prepare_features, args=(draws,), daemon=True).start()
-                    st.info("Preparação de features iniciada em background. Clique em 'Executar Genetic Search' novamente quando pronto ou use 'Atualizar agora'.")
-                    refresh_genetic_start = st.button("Atualizar agora", key="refresh_genetic_start")
-                    if refresh_genetic_start:
-                        logger.info("BotÃ£o 'Atualizar agora' (genetic start) pressionado pelo usuário")
-                        signature = _get_cache_signature(draws)
-                        f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
-                        gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
-                        mr = _load_from_disk_cache(MARKOV_CACHE_FILE, signature)
-                        hm = _load_from_disk_cache(HMM_CACHE_FILE, signature)
-                        if f is not None:
-                            st.session_state.features = f
-                            if gm is not None:
-                                st.session_state.graph_metrics = gm
-                            if mr is not None:
-                                st.session_state.markov_report = mr
-                            if hm is not None:
-                                st.session_state.hmm_report = hm
-                            logger.info("Loaded features from disk cache via 'Atualizar agora' (genetic start)")
-                            st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
-                        else:
-                            features = ensure_features(draws)
-                            if features is not None:
-                                st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
-                else:
-                    st.info("Preparação de features rodando em background...")
-                    refresh_genetic_running = st.button("Atualizar agora", key="refresh_genetic_running")
-                    if refresh_genetic_running:
-                        logger.info("BotÃ£o 'Atualizar agora' (genetic running) pressionado pelo usuário")
-                        signature = _get_cache_signature(draws)
-                        f = _load_from_disk_cache(FEATURES_CACHE_FILE, signature)
-                        gm = _load_from_disk_cache(GRAPH_CACHE_FILE, signature)
-                        mr = _load_from_disk_cache(MARKOV_CACHE_FILE, signature)
-                        hm = _load_from_disk_cache(HMM_CACHE_FILE, signature)
-                        if f is not None:
-                            st.session_state.features = f
-                            if gm is not None:
-                                st.session_state.graph_metrics = gm
-                            if mr is not None:
-                                st.session_state.markov_report = mr
-                            if hm is not None:
-                                st.session_state.hmm_report = hm
-                            logger.info("Loaded features from disk cache via 'Atualizar agora' (genetic running)")
-                            st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
-                        else:
-                            features = ensure_features(draws)
-                            if features is not None:
-                                st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+            genetic_features = features
+            if genetic_features is None:
+                st.info("Usando ranking rapido para a busca genetica. Prepare features avancadas somente se quiser o modo completo.")
+                genetic_features = build_fast_generation_features(draws, statistics)
+                genetic_features = apply_learning_to_features(genetic_features, learning_records)
 
-            if features is not None:
-                with st.spinner("Executando otimização genética..."):
-                    st.session_state.genetic_report = GeneticGameOptimizer(draws, features).run_evolutionary_search(
-                        population_size=population_size,
-                        generations=generations,
-                        fitness_criteria=fitness_criteria,
-                    )
-                    st.session_state.genetic_config = {
-                        "criteria": fitness_criteria,
-                        "population_size": population_size,
-                        "generations": generations,
-                    }
-            else:
-                st.warning("Aguarde a preparação de features terminar antes de executar a busca genética.")
+            with st.spinner("Executando otimizacao genetica..."):
+                st.session_state.genetic_report = GeneticGameOptimizer(draws, genetic_features).run_evolutionary_search(
+                    population_size=population_size,
+                    generations=generations,
+                    fitness_criteria=fitness_criteria,
+                )
+                st.session_state.genetic_config = {
+                    "criteria": fitness_criteria,
+                    "population_size": population_size,
+                    "generations": generations,
+                }
 
         if "genetic_report" in st.session_state and st.session_state.genetic_report is not None:
             config = st.session_state.get("genetic_config", {})
-            st.write(f"Último resultado gerado com critério: {config.get('criteria', 'score_total')}")
+            st.write(f"Ultimo resultado gerado com criterio: {config.get('criteria', 'score_total')}")
             render_table("Jogos gerados", st.session_state.genetic_report.sort_values("score_total", ascending=False), max_rows=10)
         else:
-            st.info("Clique no botão na barra lateral para gerar combinações genéticas usando o critério selecionado.")
-
+            st.info("Clique no botao na barra lateral para gerar combinacoes geneticas usando o criterio selecionado.")
     with tabs[10]:
         st.subheader("Correlações e padrões")
         st.write("Matriz de lift e pares de números mais correlacionados.")
