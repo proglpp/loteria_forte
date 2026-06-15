@@ -26,7 +26,7 @@ from ml_engine import MachineLearningEngine
 from ensemble_engine import EnsembleEngine
 from evaluation_engine import evaluate_last_draw
 from statistics_engine import build_statistics_report
-from elite_optimizer import generate_elite_portfolio
+from elite_optimizer import build_cycle_pattern_features, generate_elite_portfolio
 from ai_learning_engine import (
     DEFAULT_EVAL_DRAW,
     apply_learning_to_features,
@@ -145,13 +145,19 @@ def build_movement_report(draws: pd.DataFrame, rows: int = 12, strength_window: 
     trend_norm = _minmax(recent_counts - previous_counts.reindex(numbers, fill_value=0))
     delay_norm = _minmax(delay_series)
     global_norm = _minmax(global_counts)
+    pattern_features = build_cycle_pattern_features(draws).set_index("number")
+    return_signal = pattern_features["return_signal"].reindex(numbers, fill_value=0.0)
+    repeat_signal = pattern_features["repeat_signal"].reindex(numbers, fill_value=0.0)
+    pattern_score = pattern_features["pattern_score"].reindex(numbers, fill_value=0.0)
+    pattern_norm = _minmax(pattern_score)
     balance_pull = 1.0 - ((recent_counts - expected_recent).abs() / max(expected_recent, 1.0)).clip(upper=1.0)
     score = (
-        0.34 * freq_norm
-        + 0.25 * delay_norm
-        + 0.18 * trend_norm
-        + 0.13 * balance_pull
-        + 0.10 * global_norm
+        0.29 * freq_norm
+        + 0.20 * delay_norm
+        + 0.16 * trend_norm
+        + 0.11 * balance_pull
+        + 0.09 * global_norm
+        + 0.15 * pattern_norm
     )
 
     q25, q55, q78 = score.quantile([0.25, 0.55, 0.78]).tolist()
@@ -174,6 +180,9 @@ def build_movement_report(draws: pd.DataFrame, rows: int = 12, strength_window: 
                 "freq_janela": int(recent_counts[number]),
                 "tendencia": int(recent_counts[number] - previous_counts.get(number, 0)),
                 "atraso": int(delay_series[number]),
+                "retorno": round(float(return_signal[number]) * 100, 1),
+                "repeticao": round(float(repeat_signal[number]) * 100, 1),
+                "padrao": round(float(pattern_score[number]) * 100, 1),
                 "freq_total": int(global_counts[number]),
             }
         )
@@ -193,6 +202,8 @@ def build_movement_report(draws: pd.DataFrame, rows: int = 12, strength_window: 
     missing_cycle = sorted(set(numbers) - cycle_seen)
     movement_rows.append({"Concurso": "FREQ"} | {number: int(recent_counts[number]) for number in numbers})
     movement_rows.append({"Concurso": "ATRASO"} | {number: int(delay_series[number]) for number in numbers})
+    movement_rows.append({"Concurso": "RETORNO"} | {number: int(round(return_signal[number] * 100)) for number in numbers})
+    movement_rows.append({"Concurso": "REPETE"} | {number: int(round(repeat_signal[number] * 100)) for number in numbers})
     movement_rows.append({"Concurso": "FORCA"} | {number: int(round(score[number] * 100)) for number in numbers})
     movement_rows.append({"Concurso": "FALTA CICLO"} | {number: ("*" if number in missing_cycle else "") for number in numbers})
     movement = pd.DataFrame(movement_rows).astype(str)
@@ -221,7 +232,7 @@ def style_movement_report(df: pd.DataFrame):
             return "background-color: #fff0b3; color: #805800; font-weight: 800; text-align: center;"
         try:
             numeric = float(value)
-            if row_label in {"FREQ", "ATRASO", "FORCA"}:
+            if row_label in {"FREQ", "ATRASO", "RETORNO", "REPETE", "FORCA"}:
                 intensity = min(max(numeric / 100, 0.15), 1.0) if numeric > 20 else min(max(numeric / 10, 0.1), 1.0)
                 return f"background-color: rgba(91, 21, 159, {0.18 + 0.42 * intensity}); color: #111827; font-weight: 700; text-align: center;"
         except Exception:
@@ -241,7 +252,7 @@ def style_movement_report(df: pd.DataFrame):
             row_label = str(data.loc[row_index, "Concurso"])
             for column in data.columns:
                 value = data.loc[row_index, column]
-                if row_label in {"FREQ", "ATRASO", "FORCA"} and column != "Concurso":
+                if row_label in {"FREQ", "ATRASO", "RETORNO", "REPETE", "FORCA"} and column != "Concurso":
                     styles.loc[row_index, column] = "background-color: #efe3ff; color: #1f1235; font-weight: 800; text-align: center;"
                 else:
                     styles.loc[row_index, column] = style_cell(value, column, row_label)
@@ -279,6 +290,8 @@ def render_movement_tab(draws: pd.DataFrame) -> None:
             {"classe": "OBS", "leitura": "zona intermediaria para compor cobertura"},
             {"classe": "FRACO", "leitura": "baixa forca no momento pela combinacao matematica atual"},
             {"classe": "FALTA CICLO", "leitura": "dezena ausente nos ultimos concursos usados como ciclo curto"},
+            {"classe": "RETORNO", "leitura": "pressao historica para voltar depois do atraso atual"},
+            {"classe": "REPETE", "leitura": "chance historica de repetir apos ter saido no ultimo concurso"},
         ]
     )
     st.dataframe(legend, width="stretch", hide_index=True)

@@ -36,11 +36,11 @@ class EliteProfile:
 
 
 WEIGHT_CANDIDATES = [
-    {"freq_25": 0.30, "freq_50": 0.20, "freq_100": 0.14, "decay": 0.16, "delay_mid": 0.10, "last": 0.04, "learning": 0.06},
-    {"freq_25": 0.22, "freq_50": 0.24, "freq_100": 0.18, "decay": 0.14, "delay_mid": 0.12, "last": 0.02, "learning": 0.08},
-    {"freq_10": 0.12, "freq_25": 0.24, "freq_50": 0.20, "decay": 0.18, "delay_mid": 0.12, "last": 0.04, "learning": 0.10},
-    {"freq_25": 0.18, "freq_50": 0.18, "freq_100": 0.18, "freq_250": 0.12, "decay": 0.14, "delay_long": 0.12, "learning": 0.08},
-    {"freq_10": 0.08, "freq_25": 0.18, "freq_50": 0.24, "freq_100": 0.18, "decay": 0.12, "delay_mid": 0.10, "last": 0.02, "learning": 0.08},
+    {"freq_25": 0.26, "freq_50": 0.18, "freq_100": 0.12, "decay": 0.14, "delay_mid": 0.08, "last": 0.03, "pattern": 0.13, "learning": 0.06},
+    {"freq_25": 0.18, "freq_50": 0.22, "freq_100": 0.16, "decay": 0.12, "delay_mid": 0.10, "last": 0.02, "pattern": 0.12, "learning": 0.08},
+    {"freq_10": 0.10, "freq_25": 0.21, "freq_50": 0.18, "decay": 0.15, "delay_mid": 0.10, "last": 0.03, "pattern": 0.13, "learning": 0.10},
+    {"freq_25": 0.15, "freq_50": 0.16, "freq_100": 0.16, "freq_250": 0.10, "decay": 0.12, "delay_long": 0.10, "pattern": 0.13, "learning": 0.08},
+    {"freq_10": 0.07, "freq_25": 0.16, "freq_50": 0.22, "freq_100": 0.16, "decay": 0.10, "delay_mid": 0.08, "last": 0.02, "pattern": 0.11, "learning": 0.08},
 ]
 
 
@@ -63,6 +63,63 @@ def _decay_counts(draws: pd.DataFrame, decay: float = 0.975) -> pd.Series:
         present = list(_draw_set(row))
         counts.loc[present] += 1.0
     return counts.reindex(NUMBERS, fill_value=0.0)
+
+
+def build_cycle_pattern_features(draws: pd.DataFrame) -> pd.DataFrame:
+    history = [_draw_set(row) for _, row in draws.reset_index(drop=True).iterrows()]
+    rows = []
+    for number in NUMBERS:
+        flags = [number in draw_set for draw_set in history]
+        current_hit_streak = 0
+        current_miss_streak = 0
+        for flag in reversed(flags):
+            if flag:
+                if current_miss_streak:
+                    break
+                current_hit_streak += 1
+            else:
+                if current_hit_streak:
+                    break
+                current_miss_streak += 1
+
+        repeat_events = []
+        return_events_by_delay: dict[int, list[int]] = {}
+        miss_streak = 0
+        for index in range(1, len(flags)):
+            if flags[index - 1]:
+                repeat_events.append(1 if flags[index] else 0)
+            previous_delay = min(miss_streak, 12)
+            return_events_by_delay.setdefault(previous_delay, []).append(1 if flags[index] else 0)
+            miss_streak = 0 if flags[index] else miss_streak + 1
+
+        delay_bucket = min(current_miss_streak, 12)
+        bucket_events = return_events_by_delay.get(delay_bucket, [])
+        nearby_events = []
+        for bucket in range(max(0, delay_bucket - 1), min(12, delay_bucket + 1) + 1):
+            nearby_events.extend(return_events_by_delay.get(bucket, []))
+
+        repeat_rate = float(np.mean(repeat_events)) if repeat_events else 0.20
+        return_rate = float(np.mean(bucket_events or nearby_events)) if (bucket_events or nearby_events) else 0.20
+        miss_pressure = min(current_miss_streak / 12.0, 1.0)
+        hit_exhaustion = min(max(current_hit_streak - 1, 0) / 4.0, 1.0)
+        repeat_signal = repeat_rate if flags[-1:] == [True] else 0.0
+        return_signal = return_rate * miss_pressure if current_miss_streak else 0.0
+        exhaustion_penalty = hit_exhaustion * (1.0 - repeat_rate)
+        pattern_score = (0.52 * return_signal) + (0.30 * repeat_signal) + (0.18 * miss_pressure) - (0.32 * exhaustion_penalty)
+
+        rows.append(
+            {
+                "number": number,
+                "current_hit_streak": int(current_hit_streak),
+                "current_miss_streak": int(current_miss_streak),
+                "repeat_next_rate": repeat_rate,
+                "return_after_delay_rate": return_rate,
+                "return_signal": return_signal,
+                "repeat_signal": repeat_signal,
+                "pattern_score": pattern_score,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def build_elite_scores(
@@ -93,6 +150,8 @@ def build_elite_scores(
 
     last_draw = _draw_set(history.iloc[-1]) if not history.empty else set()
     rows["last"] = rows["number"].isin(last_draw).astype(float)
+    pattern_features = build_cycle_pattern_features(history)
+    rows = rows.merge(pattern_features, on="number", how="left")
 
     if learning_records:
         profile = build_learning_profile(learning_records)[["number", "ai_learning_score", "pressao_de_resgate"]]
@@ -106,6 +165,8 @@ def build_elite_scores(
     for column, weight in weights.items():
         if column == "learning":
             score += float(weight) * _minmax(rows["ai_learning_score"] + (0.35 * rows["pressao_de_resgate"]))
+        elif column == "pattern":
+            score += float(weight) * _minmax(rows["pattern_score"])
         elif column in rows.columns:
             score += float(weight) * _minmax(rows[column])
     rows["elite_score"] = score
@@ -188,11 +249,11 @@ def generate_elite_portfolio(
     score_map = scores.set_index("number")["elite_score"].to_dict()
 
     if target_hits >= 19:
-        core_size = 28
-        fill_threshold = 47
-        pool_size = 58
-        usage_strength = 0.025
-        noise_strength = 0.003
+        core_size = 0
+        fill_threshold = 34
+        pool_size = 100
+        usage_strength = 0.160
+        noise_strength = 0.012
     else:
         core_size = 16
         fill_threshold = 42
@@ -251,6 +312,31 @@ def generate_elite_portfolio(
         games.append(game)
         for number in game:
             usage[number] += 1
+
+    if target_hits >= 19:
+        missing_numbers = [number for number in NUMBERS if usage.get(number, 0) == 0]
+        for missing in missing_numbers:
+            best_game_index = None
+            best_out_number = None
+            best_value = -1e9
+            for game_index, game in enumerate(games):
+                game_set = set(game)
+                if missing in game_set:
+                    continue
+                removable = [number for number in game if usage.get(number, 0) > 1]
+                if not removable:
+                    continue
+                out_number = min(removable, key=lambda number: score_map.get(number, 0.0) - (usage.get(number, 0) * 0.06))
+                value = usage.get(out_number, 0) - score_map.get(out_number, 0.0) + score_map.get(missing, 0.0)
+                if value > best_value:
+                    best_value = value
+                    best_game_index = game_index
+                    best_out_number = out_number
+            if best_game_index is None or best_out_number is None:
+                continue
+            games[best_game_index] = sorted([number for number in games[best_game_index] if number != best_out_number] + [missing])
+            usage[best_out_number] -= 1
+            usage[missing] = usage.get(missing, 0) + 1
 
     games.sort(key=lambda game: _ticket_quality(game, scores), reverse=True)
     return games, profile, scores
