@@ -65,7 +65,7 @@ def _save_games(games: List[List[str]], profile: EliteProfile, scores: pd.DataFr
     return games_df
 
 
-def _portfolio_analysis(draws: pd.DataFrame, games: List[List[str]], ensemble: pd.DataFrame, scores: pd.DataFrame):
+def _portfolio_analysis(draws: pd.DataFrame, games: List[List[str]], profile: EliteProfile, ensemble: pd.DataFrame, scores: pd.DataFrame):
     unique_numbers = sorted({number for game in games for number in game}, key=lambda x: int(x))
     frequency = pd.Series([number for game in games for number in game]).value_counts().sort_index()
     top_20_pred = ensemble.head(20)[['number', 'prob_final']].to_dict(orient='records')
@@ -110,7 +110,7 @@ def main() -> None:
         target_hits=19,
     )
     games_df = _save_games(games, profile, scores)
-    report = _portfolio_analysis(draws, games, ensemble, scores)
+    report = _portfolio_analysis(draws, games, profile, ensemble, scores)
     with open(REPORT_FILE, 'w', encoding='utf-8') as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2)
 
