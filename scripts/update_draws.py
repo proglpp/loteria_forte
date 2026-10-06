@@ -1,64 +1,70 @@
-import pandas as pd
+import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.request import Request, urlopen
 
-DATA_FILE = Path('data/Lotomania.csv')
+import pandas as pd
 
-# Read current CSV with all columns as strings
-df = pd.read_csv(DATA_FILE, sep=';', encoding='utf-8-sig', engine='python', dtype=str)
+DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'Lotomania.csv'
+API_URL = 'https://servicebus2.caixa.gov.br/portaldeloterias/api/lotomania'
+DRAW_COLUMNS = [f'Bola{index}' for index in range(1, 21)]
 
-# Data mapping do usuário
-updates = {
-    '2943': ('29/06/2026', '03;09;10;11;13;14;18;23;29;32;51;64;65;70;78;84;85;87;95;96'),
-    '2944': ('01/07/2026', '12;20;24;29;35;37;38;46;53;60;63;75;79;80;82;86;90;91;96;98'),
-    '2945': ('03/07/2026', '00;04;05;07;10;14;18;22;24;40;46;47;57;59;64;74;76;81;84;97'),
-}
 
-# Update existing rows
-for concurso, (data_sorteio, numeros) in updates.items():
-    row_idx = df[df['Concurso'] == concurso].index
-    if len(row_idx) > 0:
-        i = row_idx[0]
-        df.at[i, 'Data Sorteio'] = data_sorteio
-        # Update balls (Bola1 to Bola20)
-        numeros_list = numeros.split(';')
-        for j, num in enumerate(numeros_list, 1):
-            df.at[i, f'Bola{j}'] = str(int(num)).zfill(2)
-        print(f"Updated concurso {concurso} to {data_sorteio}")
+def fetch_draw(contest: int | None) -> dict:
+    url = API_URL if contest is None else f'{API_URL}/{contest}'
+    request = Request(
+        url,
+        headers={'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0'},
+    )
+    with urlopen(request, timeout=30) as response:
+        draw = json.load(response)
 
-# Add new row for 06/07 (concurso 2946)
-novo_concurso = {
-    'Concurso': '2946',
-    'Data Sorteio': '06/07/2026',
-}
-numeros_novo = ['01', '03', '15', '17', '20', '22', '30', '31', '35', '40', '45', '51', '53', '59', '64', '65', '72', '82', '86', '89']
-for j, num in enumerate(numeros_novo, 1):
-    novo_concurso[f'Bola{j}'] = str(int(num)).zfill(2)
+    numbers = draw.get('listaDezenas')
+    if (contest is not None and draw.get('numero') != contest) or not isinstance(numbers, list) or len(numbers) != 20:
+        raise ValueError(f'Resultado inválido recebido para o concurso {contest or "mais recente"}')
+    if len(set(numbers)) != 20 or any(not str(number).isdigit() or not 0 <= int(number) <= 99 for number in numbers):
+        raise ValueError(f'Dezenas inválidas recebidas para o concurso {contest}')
+    if not draw.get('dataApuracao'):
+        raise ValueError(f'Data de apuração ausente para o concurso {contest}')
+    return draw
 
-# Fill missing columns with defaults
-for col in df.columns:
-    if col not in novo_concurso:
-        if 'Ganhadores' in col or 'Rateio' in col or 'Rateio' in col or 'Arrecadação' in col or 'Estimativa' in col or 'Acumulado' in col:
-            if 'Rateio' in col or 'Arrecadação' in col or 'Estimativa' in col or 'Acumulado' in col:
-                novo_concurso[col] = 'R$0,00'
-            else:
-                novo_concurso[col] = 0
-        elif col == 'Observação':
-            novo_concurso[col] = ''
-        elif col == 'Cidade / UF':
-            novo_concurso[col] = ''
-        else:
-            novo_concurso[col] = ''
 
-# Add new row
-df = pd.concat([df, pd.DataFrame([novo_concurso])], ignore_index=True)
-print(f"Added concurso 2946 for 06/07/2026")
+def build_row(draw: dict, columns: list[str]) -> dict[str, str]:
+    row = {column: '' for column in columns}
+    row['Concurso'] = str(draw['numero'])
+    row['Data Sorteio'] = draw['dataApuracao']
+    for index, number in enumerate(draw['listaDezenas'], start=1):
+        row[f'Bola{index}'] = str(number).zfill(2)
+    return row
 
-# Save
-df.to_csv(DATA_FILE, sep=';', index=False, encoding='utf-8-sig')
-print(f"\nFile saved: {DATA_FILE}")
-print(f"Total rows: {len(df)}")
-print(f"\nLast 5 rows:")
-for idx in df.tail(5).index:
-    row = df.loc[idx]
-    bolas = ';'.join([str(row[f'Bola{i}']) for i in range(1, 21)])
-    print(f"  {row['Concurso']}: {row['Data Sorteio']} - {bolas}")
+
+def main() -> None:
+    df = pd.read_csv(DATA_FILE, sep=';', encoding='utf-8-sig', dtype=str, keep_default_na=False)
+    latest = fetch_draw(None)
+    latest_contest = int(latest['numero'])
+    current_contest = int(df['Concurso'].astype(int).max()) if not df.empty else 0
+
+    if latest_contest <= current_contest:
+        print(f'Base já está atualizada: concurso {current_contest}.')
+        return
+
+    contests = list(range(current_contest + 1, latest_contest + 1))
+    draws_by_contest = {latest_contest: latest}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        for draw in executor.map(fetch_draw, [contest for contest in contests if contest != latest_contest]):
+            draws_by_contest[int(draw['numero'])] = draw
+
+    new_rows = [build_row(draws_by_contest[contest], list(df.columns)) for contest in contests]
+    updated = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+    updated = updated.sort_values('Concurso', key=lambda values: values.astype(int)).reset_index(drop=True)
+    updated.to_csv(DATA_FILE, sep=';', index=False, encoding='utf-8-sig')
+
+    last_draw = draws_by_contest[latest_contest]
+    print(f'Concursos adicionados: {contests[0]} a {latest_contest}')
+    print(f'Último resultado: {last_draw["numero"]} em {last_draw["dataApuracao"]}')
+    print(f'Dezenas: {";".join(last_draw["listaDezenas"])}')
+    print(f'Arquivo atualizado: {DATA_FILE}')
+
+
+if __name__ == '__main__':
+    main()

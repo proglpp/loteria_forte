@@ -379,7 +379,7 @@ def ensure_features(draws):
         return st.session_state.features
 
     # synchronous prepare (keeps compatibility when explicitly requested)
-    with st.spinner("Preparando mÃ©tricas avanÃ§adas e matriz de features..."):
+    with st.spinner("Preparando métricas avançadas e matriz de features..."):
         graph_metrics = st.session_state.get("graph_metrics")
         if graph_metrics is None:
             graph_metrics = compute_graph_metrics(draws)
@@ -968,9 +968,9 @@ def run_dashboard() -> None:
     st.title("Lotomania Quant Research Engine v2.0")
 
     st.sidebar.header("Controles")
-    montecarlo_runs = st.sidebar.slider("SimulaÃ§Ãµes Monte Carlo", min_value=1000, max_value=20000, value=5000, step=1000)
+    montecarlo_runs = st.sidebar.slider("Simulações Monte Carlo", min_value=1000, max_value=20000, value=5000, step=1000)
     fitness_criteria = st.sidebar.selectbox(
-        "CritÃ©rio de fitness genÃ©tico",
+        "Critério de fitness genético",
         ["score_total", "diversity", "coverage", "balanced"],
         format_func=lambda v: {
             "score_total": "Score Total",
@@ -979,25 +979,25 @@ def run_dashboard() -> None:
             "balanced": "Balanceado",
         }[v],
     )
-    population_size = st.sidebar.slider("Tamanho da populaÃ§Ã£o genÃ©tica", min_value=10, max_value=100, value=50, step=10)
-    generations = st.sidebar.slider("GeraÃ§Ãµes genÃ©ticas", min_value=5, max_value=100, value=20, step=5)
-    run_features = st.sidebar.button("Preparar features avanÃ§adas")
+    population_size = st.sidebar.slider("Tamanho da população genética", min_value=10, max_value=100, value=50, step=10)
+    generations = st.sidebar.slider("Gerações genéticas", min_value=5, max_value=100, value=20, step=5)
+    run_features = st.sidebar.button("Preparar features avançadas")
     run_montecarlo = st.sidebar.button("Executar Monte Carlo")
     run_model = st.sidebar.button("Treinar Modelos")
-    run_model_fast = st.sidebar.button("Treinar modelos rÃ¡pido")
-    num_games = st.sidebar.slider("NÃºmero de jogos a gerar", min_value=1, max_value=100, value=1, step=1)
+    run_model_fast = st.sidebar.button("Treinar modelos rápido")
+    num_games = st.sidebar.slider("Número de jogos a gerar", min_value=1, max_value=100, value=1, step=1)
     run_backtest = st.sidebar.button("Executar Backtest")
     run_genetic = st.sidebar.button("Executar Genetic Search")
-    run_correlation = st.sidebar.button("Calcular CorrelaÃ§Ãµes")
+    run_correlation = st.sidebar.button("Calcular Correlações")
     export_csv = st.sidebar.button("Exportar CSV/JSON")
     export_sqlite = st.sidebar.button("Exportar SQLite")
-    show_model_metrics = st.sidebar.checkbox("Mostrar mÃ©tricas de ML", value=True)
+    show_model_metrics = st.sidebar.checkbox("Mostrar métricas de ML", value=True)
     st.sidebar.markdown("---")
-    st.sidebar.write("Use os botÃµes e seleÃ§Ãµes acima para gerar simulaÃ§Ãµes, otimizaÃ§Ã£o genÃ©tica e exportar resultados.")
+    st.sidebar.write("Use os botões e seleções acima para gerar simulações, otimização genética e exportar resultados.")
 
     exporter = Exporter(DATABASE_FILE)
 
-    with st.spinner("Carregando dados e mÃ©tricas bÃ¡sicas..."):
+    with st.spinner("Carregando dados e métricas básicas..."):
         draws, statistics = load_basic_draws()
 
     # Try to pre-load cached heavy results into session_state so UI shows immediately
@@ -1082,7 +1082,7 @@ def run_dashboard() -> None:
             compute_ml_report.clear()
         except Exception:
             pass
-        with st.spinner("Treinamento rÃ¡pido em andamento..."):
+        with st.spinner("Treinamento rápido em andamento..."):
             ml_engine, ml_report, ensemble_report = compute_ml_report_fast(draws, features)
         st.session_state.ml_engine = ml_engine
         st.session_state.ml_report = ml_report
@@ -1109,7 +1109,7 @@ def run_dashboard() -> None:
                 compute_ml_report.clear()
             except Exception:
                 pass
-            with st.spinner("Treinando modelos para exportaÃ§Ã£o..."):
+            with st.spinner("Treinando modelos para exportação..."):
                 ml_engine, ml_report, ensemble_report = compute_ml_report(draws, features)
             st.session_state.ml_engine = ml_engine
             st.session_state.ml_report = ml_report
@@ -1132,7 +1132,7 @@ def run_dashboard() -> None:
                 compute_ml_report.clear()
             except Exception:
                 pass
-            with st.spinner("Treinando modelos para exportaÃ§Ã£o..."):
+            with st.spinner("Treinando modelos para exportação..."):
                 ml_engine, ml_report, ensemble_report = compute_ml_report(draws, features)
             st.session_state.ml_engine = ml_engine
             st.session_state.ml_report = ml_report
@@ -1152,24 +1152,24 @@ def run_dashboard() -> None:
         "Resumo",
         "Ranking",
         "Movimentacao",
-        "PrevisÃµes",
+        "Previsões",
         "Modelos",
         "Gerador",
         "IA Aprendizado",
         "Monte Carlo",
         "Backtest",
-        "GenÃ©tico",
-        "CorrelaÃ§Ãµes",
+        "Genético",
+        "Correlações",
     ])
 
     with tabs[0]:
-        st.subheader("Resumo histÃ³rico")
+        st.subheader("Resumo histórico")
         st.dataframe(draws.tail(20))
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Concursos", len(draws))
-        col2.metric("Ãšltimo concurso", int(draws.iloc[-1]["Concurso"]))
-        col3.metric("NÃºmeros Ãºnicos sorteados", int(draws[draws.columns[2:22]].nunique().sum()))
-        col4.metric("MÃ©dia de frequÃªncia", round(float(statistics["freq_abs"].mean()), 2))
+        col2.metric("Ûltimo concurso", int(draws.iloc[-1]["Concurso"]))
+        col3.metric("Números únicos sorteados", int(draws[draws.columns[2:22]].nunique().sum()))
+        col4.metric("Média de frequência", round(float(statistics["freq_abs"].mean()), 2))
         eval_path = Path("exports") / "last_draw_evaluation.json"
         if eval_path.exists():
             import json
@@ -1179,14 +1179,14 @@ def run_dashboard() -> None:
             if int(last_eval.get("concurso", 0)) == int(draws.iloc[-1]["Concurso"]):
                 top20 = last_eval.get("top_slices", {}).get("20", {})
                 st.metric(
-                    "Acertos top-20 no Ãºltimo sorteio",
+                    "Acertos top-20 no último sorteio",
                     f"{top20.get('hits', 0)}/20",
-                    help="AvaliaÃ§Ã£o honesta (features sem vazar o resultado do Ãºltimo concurso).",
+                    help="Avaliação honesta (features sem vazar o resultado do último concurso).",
                 )
-        render_chart(statistics.sort_values("freq_abs", ascending=False).head(50), "number", "freq_abs", "Top 50 nÃºmeros por frequÃªncia")
+        render_chart(statistics.sort_values("freq_abs", ascending=False).head(50), "number", "freq_abs", "Top 50 números por frequência")
 
     with tabs[1]:
-        st.subheader("Ranking de NÃºmeros e Score Total")
+        st.subheader("Ranking de Números e Score Total")
         if features is None:
             quick_features = build_fast_generation_features(draws, statistics)
             quick_features = apply_learning_to_features(quick_features, learning_records)
@@ -1203,18 +1203,18 @@ def run_dashboard() -> None:
         render_movement_tab(draws)
 
     with tabs[3]:
-        st.subheader("PrevisÃµes de nÃºmeros")
-        st.write("Os nÃºmeros abaixo sÃ£o ordenados pela probabilidade final da pilha de modelos.")
+        st.subheader("Previsões de números")
+        st.write("Os números abaixo são ordenados pela probabilidade final da pilha de modelos.")
         if ensemble_report is None:
             st.info("Clique em 'Treinar modelos' no painel lateral para calcular as previsoes.")
         else:
             display_cols = [c for c in ("number", "prob_final", "prob_ensemble", "prob_weighted", "prob_mean") if c in ensemble_report.columns]
-            render_table("Top 50 para o prÃ³ximo concurso", ensemble_report[display_cols], max_rows=50)
+            render_table("Top 50 para o próximo concurso", ensemble_report[display_cols], max_rows=50)
 
     with tabs[4]:
-        st.subheader("AvaliaÃ§Ã£o de Modelos")
+        st.subheader("Avaliação de Modelos")
         if ensemble_report is None:
-            st.info("Treine os modelos para ver a comparaÃ§Ã£o entre eles.")
+            st.info("Treine os modelos para ver a comparação entre eles.")
         else:
             model_columns = [
                 col
@@ -1223,13 +1223,13 @@ def run_dashboard() -> None:
             ]
             if model_columns:
                 comparison = ensemble_report.set_index("number")[model_columns].head(10)
-                st.markdown("**ComparaÃ§Ã£o entre modelos (top 10)**")
+                st.markdown("**Comparação entre modelos (top 10)**")
                 render_multi_series_chart(comparison.reset_index(), "number", model_columns, "Probabilidades por modelo")
-                st.write("Probabilidades dos modelos para os 10 nÃºmeros com maior probabilidade mÃ©dia.")
+                st.write("Probabilidades dos modelos para os 10 números com maior probabilidade média.")
                 st.dataframe(comparison)
 
             if show_model_metrics and ml_engine is not None and hasattr(ml_engine, "model_metrics_") and ml_engine.model_metrics_ is not None:
-                st.markdown("**MÃ©tricas de validaÃ§Ã£o por modelo**")
+                st.markdown("**Métricas de validação por modelo**")
                 st.dataframe(ml_engine.model_metrics_)
             if show_model_metrics and ml_engine is not None and hasattr(ml_engine, "feature_importances_") and ml_engine.feature_importances_ is not None:
                 st.markdown("**Principais features do modelo**")
@@ -1254,16 +1254,16 @@ def run_dashboard() -> None:
         with col1:
             st.markdown("#### Configuracao da geracao")
             generate_method = st.radio(
-                "MÃ©todo de cada jogo",
+                "Método de cada jogo",
                 ["elite_19", "elite_15", "post_result", "top_score", "balanced", "coverage", "random"],
                 format_func=lambda v: {
                     "elite_19": "Ultra 19+",
                     "elite_15": "Elite 15+",
-                    "post_result": "PÃ³s-resultado",
-                    "top_score": "PontuaÃ§Ã£o MÃ¡xima",
+                    "post_result": "Pós-resultado",
+                    "top_score": "Pontuação Máxima",
                     "balanced": "Balanceado",
                     "coverage": "Cobertura/Atraso",
-                    "random": "AleatÃ³rio",
+                    "random": "Aleatório",
                 }[v],
                 horizontal=False,
             )
@@ -1273,7 +1273,7 @@ def run_dashboard() -> None:
             closure_universe = st.slider("Universo do fechamento", min_value=50, max_value=100, value=90, step=1)
             closure_games = st.slider("Jogos no fechamento", min_value=2, max_value=30, value=max(4, min(10, num_games)), step=1)
             use_power_portfolio = st.checkbox("Otimizar carteira de jogos", value=True)
-            power_floor = st.slider("PotÃªncia mÃ­nima", min_value=0.60, max_value=0.95, value=0.78, step=0.01)
+            power_floor = st.slider("Potência mínima", min_value=0.60, max_value=0.95, value=0.78, step=0.01)
             st.caption("O fechamento escolhe um universo maior e distribui os numeros em jogos de 50.")
 
         with col2:
@@ -1289,9 +1289,9 @@ def run_dashboard() -> None:
             if using_fast_generator:
                 st.info("Modo rapido ativo: voce ja pode gerar jogos sem aguardar as metricas avancadas.")
             else:
-                st.success("Modo avanÃ§ado ativo.")
+                st.success("Modo avançado ativo.")
 
-            if st.button(f"Gerador automÃ¡tico: {generation_count} jogo(s)", key="button_generate_auto", width="stretch"):
+            if st.button(f"Gerador automático: {generation_count} jogo(s)", key="button_generate_auto", width="stretch"):
                 fixed_numbers = game_config.get("fixed", [])
                 base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
                 st.session_state.generation_variation = st.session_state.get("generation_variation", 0) + 1
@@ -1334,7 +1334,7 @@ def run_dashboard() -> None:
                     )
                 append_generated_games(generated_games)
                 covered = len(set().union(*[set(game) for game in generated_games])) if generated_games else 0
-                st.success(f"Gerados {len(generated_games)} jogos diferentes cobrindo {covered} nÃºmeros")
+                st.success(f"Gerados {len(generated_games)} jogos diferentes cobrindo {covered} números")
                 if len(fixed_numbers) == 0:
                     st.session_state.ui_selected_numbers = set()
 
@@ -1353,7 +1353,7 @@ def run_dashboard() -> None:
                     ensemble_report=generation_ensemble,
                 )
                 append_generated_games([generated_game])
-                st.success(f"Jogo completo com {len(generated_game)} nÃºmeros")
+                st.success(f"Jogo completo com {len(generated_game)} números")
                 if len(fixed_numbers) == 0:
                     st.session_state.ui_selected_numbers = set()
             
@@ -1377,7 +1377,7 @@ def run_dashboard() -> None:
                         ensemble_report=ensemble_report,
                     )
                     append_generated_games([generated_game])
-                    st.success(f"âœ“ Jogo gerado com {len(generated_game)} nÃºmeros")
+                    st.success(f"✓ Jogo gerado com {len(generated_game)} números")
                     
                     # Clear selection unless numbers are fixed
                     if len(fixed_numbers) == 0:
@@ -1402,7 +1402,7 @@ def run_dashboard() -> None:
                             variation=variation,
                         )
                         covered = len(set().union(*[set(game) for game in generated_games])) if generated_games else 0
-                        st.success(f"âœ“ Fechamento gerado: {len(generated_games)} jogos de 50 cobrindo {covered} nÃºmeros")
+                        st.success(f"✓ Fechamento gerado: {len(generated_games)} jogos de 50 cobrindo {covered} números")
                     else:
                         generated_games = generate_games(
                             features,
@@ -1416,13 +1416,13 @@ def run_dashboard() -> None:
                     
                     append_generated_games(generated_games)
                     if not use_closure and not use_power_portfolio:
-                        st.success(f"âœ“ {len(generated_games)} jogos gerados com sucesso")
+                        st.success(f"✓ {len(generated_games)} jogos gerados com sucesso")
                     
                     # Clear selection unless numbers are fixed
                     if len(fixed_numbers) == 0:
                         st.session_state.ui_selected_numbers = set()
 
-                if st.button("Completar com PontuaÃ§Ã£o", key="button_complete_top_score", width="stretch"):
+                if st.button("Completar com Pontuação", key="button_complete_top_score", width="stretch"):
                     # Get fixed numbers from game_config
                     fixed_numbers = game_config.get("fixed", [])
                     base_selection = fixed_numbers if len(fixed_numbers) > 0 else selected_numbers
@@ -1442,7 +1442,7 @@ def run_dashboard() -> None:
                         )
                         append_generated_games(generated_games)
                         covered = len(set().union(*[set(game) for game in generated_games])) if generated_games else 0
-                        st.success(f"âœ“ Fechamento por pontuaÃ§Ã£o gerado cobrindo {covered} nÃºmeros")
+                        st.success(f"✓ Fechamento por pontuação gerado cobrindo {covered} números")
                     else:
                         generated_game = generate_game(
                             features,
@@ -1453,7 +1453,7 @@ def run_dashboard() -> None:
                             ensemble_report=ensemble_report,
                         )
                         append_generated_games([generated_game])
-                        st.success("âœ“ Jogo completo gerado")
+                        st.success("✓ Jogo completo gerado")
                     
                     # Clear selection unless numbers are fixed
                     if len(fixed_numbers) == 0:
@@ -1470,12 +1470,12 @@ def run_dashboard() -> None:
 
         if generated_games:
             portfolio_stats = estimate_portfolio_prize_chances(generated_games)
-            st.markdown("### MatemÃ¡tica da carteira")
+            st.markdown("### Matemática da carteira")
             stat_cols = st.columns(6)
             stat_cols[0].metric("Jogos", len(generated_games))
             stat_cols[1].metric("Cobertura", portfolio_stats["covered_numbers"])
-            stat_cols[2].metric("SobreposiÃ§Ã£o mÃ©dia", round(portfolio_stats["avg_overlap"], 1))
-            stat_cols[3].metric("MÃ©dia melhor acerto", round(portfolio_stats["avg_best_hits"], 2))
+            stat_cols[2].metric("Sobreposição média", round(portfolio_stats["avg_overlap"], 1))
+            stat_cols[3].metric("Média melhor acerto", round(portfolio_stats["avg_best_hits"], 2))
             stat_cols[4].metric("Chance 17+", f"{portfolio_stats['tiers']['17'] * 100:.3f}%")
             stat_cols[5].metric("Chance 18+", f"{portfolio_stats['tiers']['18'] * 100:.4f}%")
             odds_rows = []
@@ -1514,7 +1514,7 @@ def run_dashboard() -> None:
         if not generated_games:
             st.info("Gere jogos na aba Gerador para avaliar acertos, erros e alimentar o aprendizado.")
         elif len(actual_draw) != 20:
-            st.warning("Informe exatamente 20 nÃºmeros do resultado real.")
+            st.warning("Informe exatamente 20 números do resultado real.")
         else:
             evaluation_df = evaluate_games_against_draw(generated_games, actual_draw)
             best_hits = int(evaluation_df["acertos"].max()) if not evaluation_df.empty else 0
@@ -1529,8 +1529,8 @@ def run_dashboard() -> None:
             result_cols = st.columns(5)
             result_cols[0].metric("Jogos avaliados", len(generated_games))
             result_cols[1].metric("Melhor acerto", best_hits)
-            result_cols[2].metric("MÃ©dia de acertos", round(avg_hits, 2))
-            result_cols[3].metric("Base matemÃ¡tica esperada", round(expected_hits, 2))
+            result_cols[2].metric("Média de acertos", round(avg_hits, 2))
+            result_cols[3].metric("Base matemática esperada", round(expected_hits, 2))
             result_cols[4].metric("Chance â‰¥ melhor", f"{chance_best_or_more * 100:.2f}%")
 
             if best_hits >= expected_hits:
@@ -1540,14 +1540,14 @@ def run_dashboard() -> None:
 
             st.dataframe(evaluation_df, width="stretch", hide_index=True)
 
-            if st.button("Salvar avaliaÃ§Ã£o e treinar IA", key="button_save_ai_feedback", width="stretch"):
+            if st.button("Salvar avaliação e treinar IA", key="button_save_ai_feedback", width="stretch"):
                 learning_records = record_learning_feedback(
                     generated_games,
                     actual_draw,
                     draw_date=feedback_date.isoformat(),
                     method=st.session_state.get("last_generation_method", "manual"),
                 )
-                st.success(f"Aprendizado salvo com {len(learning_records)} registro(s). Os prÃ³ximos jogos jÃ¡ usam esse ajuste.")
+                st.success(f"Aprendizado salvo com {len(learning_records)} registro(s). Os próximos jogos já usam esse ajuste.")
                 st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
 
         learning_records = load_learning_records()
@@ -1561,25 +1561,25 @@ def run_dashboard() -> None:
                 "erros_quando_escolhido",
                 "sorteado_fora_do_jogo",
             ]
-            st.markdown("### MemÃ³ria aprendida")
+            st.markdown("### Memória aprendida")
             st.write(f"Registros salvos: {len(learning_records)}")
             st.dataframe(profile[profile_cols].head(25), width="stretch", hide_index=True)
         else:
-            st.info("A memÃ³ria da IA ainda estÃ¡ vazia. Salve uma avaliaÃ§Ã£o para comeÃ§ar.")
+            st.info("A memória da IA ainda está vazia. Salve uma avaliação para começar.")
 
     with tabs[7]:
-        st.subheader("SimulaÃ§Ã£o Monte Carlo")
+        st.subheader("Simulação Monte Carlo")
         if run_montecarlo:
             with st.spinner("Executando Monte Carlo..."):
                 st.session_state.montecarlo_results = compute_montecarlo(draws, n_simulations=montecarlo_runs)
         if st.session_state.montecarlo_results is None:
-            st.info("Clique em 'Executar Monte Carlo' no painel lateral para iniciar a simulaÃ§Ã£o.")
+            st.info("Clique em 'Executar Monte Carlo' no painel lateral para iniciar a simulação.")
         else:
             mc_results = st.session_state.montecarlo_results
             probabilities = pd.DataFrame(mc_results["probabilities"].items(), columns=["number", "probability"]).sort_values("probability", ascending=False)
-            st.metric("SimulaÃ§Ãµes", mc_results["simulations"])
+            st.metric("Simulações", mc_results["simulations"])
             render_chart(probabilities.head(50), "number", "probability", "Top 50 probabilidades em Monte Carlo")
-            render_table("Top 50 nÃºmeros por probabilidade de Monte Carlo", probabilities.head(50), max_rows=50)
+            render_table("Top 50 números por probabilidade de Monte Carlo", probabilities.head(50), max_rows=50)
 
     with tabs[8]:
         st.subheader("Resultados do Backtest")
@@ -1593,12 +1593,12 @@ def run_dashboard() -> None:
         if backtest_report is None:
             st.info("Clique em 'Executar Backtest' no painel lateral para iniciar o backtest.")
         elif backtest_report.empty:
-            st.write("Backtest nÃ£o retornou resultados suficientes.")
+            st.write("Backtest não retornou resultados suficientes.")
         else:
             summary = backtest_report[["hits", "precision", "recall", "f1", "roi_theoretical"]].describe().transpose()
             st.dataframe(summary)
-            render_chart(backtest_report, "split", "precision", "PrecisÃ£o por split")
-            render_chart(backtest_report, "split", "roi_theoretical", "ROI teÃ³rico por split")
+            render_chart(backtest_report, "split", "precision", "Precisão por split")
+            render_chart(backtest_report, "split", "roi_theoretical", "ROI teórico por split")
 
     with tabs[9]:
         st.subheader("Otimizacao Genetica")
@@ -1630,11 +1630,11 @@ def run_dashboard() -> None:
         else:
             st.info("Clique no botao na barra lateral para gerar combinacoes geneticas usando o criterio selecionado.")
     with tabs[10]:
-        st.subheader("CorrelaÃ§Ãµes e padrÃµes")
-        st.write("Matriz de lift e pares de nÃºmeros mais correlacionados.")
+        st.subheader("Correlações e padrões")
+        st.write("Matriz de lift e pares de números mais correlacionados.")
         if correlation is None:
             correlation = ensure_correlation(draws)
-        render_table("Top 50 pares de coocorrÃªncia", pd.DataFrame(strongest_pairs(correlation["cooccurrence"], top_n=50), columns=["number_a", "number_b", "count"]), max_rows=50)
+        render_table("Top 50 pares de coocorrência", pd.DataFrame(strongest_pairs(correlation["cooccurrence"], top_n=50), columns=["number_a", "number_b", "count"]), max_rows=50)
         st.markdown("**Amostra da matriz de lift**")
         st.dataframe(correlation["lift"].iloc[:20, :20])
 
