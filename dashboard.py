@@ -965,6 +965,11 @@ def append_generated_games(new_games):
 
 def run_dashboard() -> None:
     st.set_page_config(page_title="Lotomania Quant Research Engine", layout="wide")
+    from auth_ui import require_authenticated
+
+    if not require_authenticated():
+        return
+
     selected_game = st.sidebar.radio("Jogo", ["Lotomania", "Lotofácil"], key="selected_lottery_game")
     if selected_game == "Lotofácil":
         from lotofacil_dashboard import run_lotofacil_dashboard

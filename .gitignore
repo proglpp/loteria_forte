@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 *.pyd
 .env
+.streamlit/secrets.toml
 database/
 exports/
 logs/
