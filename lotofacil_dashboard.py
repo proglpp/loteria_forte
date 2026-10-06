@@ -683,6 +683,7 @@ def _render_movement(draws: pd.DataFrame, ranking: pd.DataFrame) -> None:
     for column, label in zip(metric_columns, counts.index):
         column.metric(label.title(), int(counts[label]))
     movement_table = build_lotofacil_movement_table(draws, rows=row_count, strength_window=window)
+    st.markdown("**Tabela colorida por concurso e dezena**")
     st.dataframe(style_lotofacil_movement_table(movement_table), width="stretch", height=470)
     st.markdown("**Legenda de força**")
     legend = pd.DataFrame(
