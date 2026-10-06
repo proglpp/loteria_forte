@@ -17,14 +17,22 @@ def _ensure_creator():
 
 
 class GeneticGameOptimizer:
-    def __init__(self, draws: pd.DataFrame, features: pd.DataFrame):
+    def __init__(
+        self,
+        draws: pd.DataFrame,
+        features: pd.DataFrame,
+        numbers: List[str] | None = None,
+        game_size: int = 20,
+    ):
         _ensure_creator()
         self.draws = draws
         self.features = features.set_index("number")
-        self.numbers = [f"{n:02d}" for n in range(100)]
+        self.numbers = numbers or [f"{n:02d}" for n in range(100)]
+        self.game_size = int(game_size)
+        if not 1 <= self.game_size <= len(self.numbers):
+            raise ValueError("game_size must be within the provided number universe")
         self.toolbox = base.Toolbox()
-        self.toolbox.register("attr_number", lambda: random.choice(self.numbers))
-        self.toolbox.register("individual", tools.initRepeat, creator.Individual, self._unique_number, 20)
+        self.toolbox.register("individual", tools.initIterate, creator.Individual, self._make_individual)
         self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
         self.toolbox.register("mate", tools.cxTwoPoint)
         self.toolbox.register("mutate", self._mutate)
@@ -33,22 +41,29 @@ class GeneticGameOptimizer:
         self.criteria = "score_total"
         random.seed(42)
 
-    def _unique_number(self) -> str:
-        return random.choice(self.numbers)
+    def _make_individual(self) -> List[str]:
+        return random.sample(self.numbers, self.game_size)
+
+    def _repair_individual(self, individual) -> None:
+        unique = list(dict.fromkeys(individual))[: self.game_size]
+        available = [number for number in self.numbers if number not in unique]
+        if len(unique) < self.game_size:
+            unique.extend(random.sample(available, self.game_size - len(unique)))
+        individual[:] = unique
 
     def _mutate(self, individual):
         idx = random.randrange(len(individual))
-        candidate = random.choice(self.numbers)
+        candidate = random.choice([number for number in self.numbers if number not in individual or number == individual[idx]])
         individual[idx] = candidate
         return individual,
 
     def _evaluate(self, individual: List[str]):
         unique_set = set(individual)
-        if len(unique_set) < 20:
+        if len(unique_set) < self.game_size:
             return 0.0, 0.0, 100.0
         score = self.features.loc[list(unique_set), "score_total"].sum()
         diversity = len(unique_set)
-        coverage = len(unique_set) / 20.0
+        coverage = len(unique_set) / float(self.game_size)
         if self.criteria == "score_total":
             return float(score), float(diversity), -float(coverage)
         if self.criteria == "diversity":
@@ -66,19 +81,23 @@ class GeneticGameOptimizer:
         logger.info("Running evolutionary game optimizer with criteria %s", fitness_criteria)
         self.criteria = fitness_criteria
         population = self.toolbox.population(n=population_size)
-        algorithms = tools
-        population = algorithms.selNSGA2(population, len(population))
+        for individual in population:
+            individual.fitness.values = self.toolbox.evaluate(individual)
+        population = tools.selNSGA2(population, len(population))
         for generation in range(generations):
             offspring = tools.selTournament(population, len(population), tournsize=3)
             offspring = [self.toolbox.clone(ind) for ind in offspring]
             for child1, child2 in zip(offspring[::2], offspring[1::2]):
                 if random.random() < 0.9:
                     self.toolbox.mate(child1, child2)
+                    self._repair_individual(child1)
+                    self._repair_individual(child2)
                     del child1.fitness.values
                     del child2.fitness.values
             for mutant in offspring:
                 if random.random() < 0.2:
                     self.toolbox.mutate(mutant)
+                    self._repair_individual(mutant)
                     del mutant.fitness.values
             invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
             fitnesses = map(self.toolbox.evaluate, invalid_ind)
@@ -87,7 +106,7 @@ class GeneticGameOptimizer:
             population = self.toolbox.select(population + offspring, population_size)
         results = []
         for individual in population[:20]:
-            unique_numbers = sorted(set(individual))[:20]
+            unique_numbers = sorted(set(individual))[: self.game_size]
             results.append({
                 "game": unique_numbers,
                 "score_total": sum(self.features.loc[unique_numbers, "score_total"]),
